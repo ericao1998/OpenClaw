@@ -176,6 +176,42 @@ export async function loadSessions(
   }
 }
 
+export async function createSession(
+  state: SessionsState,
+  params?: {
+    agentId?: string;
+    key?: string;
+    label?: string;
+    parentSessionKey?: string;
+    model?: string;
+    message?: string;
+  },
+): Promise<{ key: string } | null> {
+  if (!state.client || !state.connected) {
+    return null;
+  }
+  state.sessionsError = null;
+  try {
+    const result = (await state.client.request("sessions.create", {
+      ...(params?.agentId ? { agentId: params.agentId } : {}),
+      ...(params?.key ? { key: params.key } : {}),
+      ...(params?.label ? { label: params.label } : {}),
+      ...(params?.parentSessionKey ? { parentSessionKey: params.parentSessionKey } : {}),
+      ...(params?.model ? { model: params.model } : {}),
+      ...(params?.message ? { message: params.message } : {}),
+    })) as { key?: string } | null;
+    const key = typeof result?.key === "string" ? result.key.trim() : "";
+    if (!key) {
+      throw new Error("gateway did not return a session key");
+    }
+    await loadSessions(state);
+    return { key };
+  } catch (err) {
+    state.sessionsError = String(err);
+    return null;
+  }
+}
+
 export async function patchSession(
   state: SessionsState,
   key: string,

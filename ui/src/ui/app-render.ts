@@ -85,6 +85,7 @@ import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
 import {
   branchSessionFromCheckpoint,
+  createSession,
   deleteSessionsAndRefresh,
   loadSessions,
   patchSession,
@@ -1607,7 +1608,17 @@ export function renderApp(state: AppViewState) {
               canAbort: Boolean(state.chatRunId),
               onAbort: () => void state.handleAbortChat(),
               onQueueRemove: (id) => state.removeQueuedMessage(id),
-              onNewSession: () => state.handleSendChat("/new", { restoreDraft: true }),
+              onNewSession: async () => {
+                const created = await createSession(state, {
+                  agentId: resolvedAgentId ?? "main",
+                });
+                if (!created?.key) {
+                  state.lastError = state.sessionsError ?? "Failed to create a new session.";
+                  return;
+                }
+                state.lastError = null;
+                switchChatSession(state, created.key);
+              },
               onClearHistory: async () => {
                 if (!state.client || !state.connected) {
                   return;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createSession,
   deleteSessionsAndRefresh,
   loadSessions,
   subscribeSessions,
@@ -128,6 +129,47 @@ describe("deleteSessionsAndRefresh", () => {
 
     expect(deleted).toEqual([]);
     expect(request).not.toHaveBeenCalled();
+  });
+});
+
+describe("createSession", () => {
+  it("creates a session, refreshes the list, and returns the new key", async () => {
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "sessions.create") {
+        expect(params).toEqual({ agentId: "main" });
+        return { ok: true, key: "agent:main:dashboard:test-123" };
+      }
+      if (method === "sessions.list") {
+        return undefined;
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request);
+
+    const created = await createSession(state, { agentId: "main" });
+
+    expect(created).toEqual({ key: "agent:main:dashboard:test-123" });
+    expect(request).toHaveBeenNthCalledWith(1, "sessions.create", { agentId: "main" });
+    expect(request).toHaveBeenNthCalledWith(2, "sessions.list", {
+      includeGlobal: true,
+      includeUnknown: true,
+    });
+    expect(state.sessionsError).toBeNull();
+  });
+
+  it("stores an error when the gateway does not return a key", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.create") {
+        return { ok: true };
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request);
+
+    const created = await createSession(state, { agentId: "main" });
+
+    expect(created).toBeNull();
+    expect(state.sessionsError).toBe("Error: gateway did not return a session key");
   });
 });
 
