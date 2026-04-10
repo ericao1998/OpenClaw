@@ -14,6 +14,7 @@ import { refreshVisibleToolsEffectiveForCurrentSession } from "./controllers/age
 import { ChatState, loadChatHistory } from "./controllers/chat.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import { icons } from "./icons.ts";
+import { PPV_WORKSPACE_REGISTRY, type MissionControlTreeNode } from "./mission-control-registry.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import { parseAgentSessionKey } from "./session-key.ts";
 import { normalizeLowercaseStringOrEmpty, normalizeOptionalString } from "./string-coerce.ts";
@@ -70,7 +71,11 @@ function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string)
   });
 }
 
-export function renderTab(state: AppViewState, tab: Tab, opts?: { collapsed?: boolean }) {
+export function renderTab(
+  state: AppViewState,
+  tab: Tab,
+  opts?: { collapsed?: boolean; onClick?: (event: MouseEvent) => void },
+) {
   const href = pathForTab(tab, state.basePath);
   const isActive = state.tab === tab;
   const collapsed = opts?.collapsed ?? state.settings.navCollapsed;
@@ -90,6 +95,10 @@ export function renderTab(state: AppViewState, tab: Tab, opts?: { collapsed?: bo
           return;
         }
         event.preventDefault();
+        if (opts?.onClick) {
+          opts.onClick(event);
+          return;
+        }
         if (tab === "chat") {
           const mainSessionKey = resolveSidebarChatSessionKey(state);
           if (state.sessionKey !== mainSessionKey) {
@@ -154,34 +163,36 @@ export function renderChatSessionSelect(state: AppViewState) {
       ?.label ?? state.sessionKey;
   return html`
     <div class="chat-controls__session-row">
-      <label class="field chat-controls__session">
-        <select
-          .value=${state.sessionKey}
-          title=${selectedSessionLabel}
-          ?disabled=${!state.connected || sessionGroups.length === 0}
-          @change=${(e: Event) => {
-            const next = (e.target as HTMLSelectElement).value;
-            if (state.sessionKey === next) {
-              return;
-            }
-            switchChatSession(state, next);
-          }}
-        >
-          ${repeat(
-            sessionGroups,
-            (group) => group.id,
-            (group) =>
-              html`<optgroup label=${group.label}>
-                ${repeat(
-                  group.options,
-                  (entry) => entry.key,
-                  (entry) =>
-                    html`<option value=${entry.key} title=${entry.title}>${entry.label}</option>`,
-                )}
-              </optgroup>`,
-          )}
-        </select>
-      </label>
+      <div class="chat-controls__session-stack">
+        <label class="field chat-controls__session chat-controls__worktree">
+          <select
+            .value=${state.sessionKey}
+            title=${selectedSessionLabel}
+            ?disabled=${!state.connected || sessionGroups.length === 0}
+            @change=${(e: Event) => {
+              const next = (e.target as HTMLSelectElement).value;
+              if (state.sessionKey === next) {
+                return;
+              }
+              switchChatSession(state, next);
+            }}
+          >
+            ${repeat(
+              sessionGroups,
+              (group) => group.id,
+              (group) =>
+                html`<optgroup label=${group.label}>
+                  ${repeat(
+                    group.options,
+                    (entry) => entry.key,
+                    (entry) =>
+                      html`<option value=${entry.key} title=${entry.title}>${entry.label}</option>`,
+                  )}
+                </optgroup>`,
+            )}
+          </select>
+        </label>
+      </div>
       ${modelSelect} ${thinkingSelect}
     </div>
   `;
@@ -908,12 +919,37 @@ type SessionOptionGroup = {
   options: SessionOptionEntry[];
 };
 
+type ProjectRepoOption = {
+  id: string;
+  label: string;
+  sessionKey: string;
+  title: string;
+  groupId: string;
+  groupLabel: string;
+};
+
+type ProjectRepoGroup = {
+  id: string;
+  label: string;
+  repos: ProjectRepoOption[];
+};
+
+type ProjectTreeChildNode = {
+  id: string;
+  label: string;
+  kind: MissionControlTreeNode["kind"];
+  repo?: ProjectRepoOption;
+  children: ProjectTreeChildNode[];
+};
+
 export function resolveSessionOptionGroups(
   state: AppViewState,
   sessionKey: string,
   sessions: SessionsListResult | null,
 ): SessionOptionGroup[] {
   const rows = sessions?.sessions ?? [];
+  const selectedRepoId = normalizeLowercaseStringOrEmpty(state.selectedProjectRepo) || "main";
+  const repoRootKeys = resolveRepoSessionRootKeys(state, selectedRepoId);
   const hideCron = state.sessionsHideCron ?? true;
   const byKey = new Map<string, SessionsListResult["sessions"][number]>();
   for (const row of rows) {
@@ -943,14 +979,20 @@ export function resolveSessionOptionGroups(
     seenKeys.add(key);
     const row = byKey.get(key);
     const parsed = parseAgentSessionKey(key);
-    const group = parsed
-      ? ensureGroup(
-          `agent:${normalizeLowercaseStringOrEmpty(parsed.agentId)}`,
-          resolveAgentGroupLabel(state, parsed.agentId),
-        )
-      : ensureGroup("other", "Other Sessions");
+    const rowRepoId = normalizeLowercaseStringOrEmpty(parsed?.agentId ?? "main") || "main";
+    if (rowRepoId !== selectedRepoId) {
+      return;
+    }
+    const depth = resolveSessionTreeDepth(row, byKey, selectedRepoId);
+    const isRoot = repoRootKeys.has(key) || depth === 0;
+    const group = isRoot
+      ? ensureGroup(`repo-root:${key}`, resolveSessionScopedOptionLabel(key, row, parsed?.rest))
+      : ensureGroup("repo-children", "Work tree");
     const scopeLabel = normalizeOptionalString(parsed?.rest) ?? key;
-    const label = resolveSessionScopedOptionLabel(key, row, parsed?.rest);
+    const label = resolveSessionTreeLabel(
+      resolveSessionScopedOptionLabel(key, row, parsed?.rest),
+      depth,
+    );
     group.options.push({
       key,
       label,
@@ -960,6 +1002,11 @@ export function resolveSessionOptionGroups(
   };
 
   for (const row of rows) {
+    const parsed = parseAgentSessionKey(row.key);
+    const rowRepoId = normalizeLowercaseStringOrEmpty(parsed?.agentId ?? "main") || "main";
+    if (rowRepoId !== selectedRepoId && row.key !== sessionKey) {
+      continue;
+    }
     if (row.key !== sessionKey && (row.kind === "global" || row.kind === "unknown")) {
       continue;
     }
@@ -1056,6 +1103,188 @@ function countHiddenCronSessions(sessionKey: string, sessions: SessionsListResul
   }
   // Don't count the currently active session even if it's a cron.
   return sessions.sessions.filter((s) => isCronSessionKey(s.key) && s.key !== sessionKey).length;
+}
+
+function resolveProjectGrouping(
+  repoId: string,
+  label: string,
+): { groupId: string; groupLabel: string } {
+  const normalizedRepo = normalizeLowercaseStringOrEmpty(repoId);
+  const normalizedLabel = normalizeLowercaseStringOrEmpty(label);
+  const matchingDomain = PPV_WORKSPACE_REGISTRY.domains.find((domain) => {
+    const domainRepo = normalizeLowercaseStringOrEmpty(domain.repo);
+    const domainName = normalizeLowercaseStringOrEmpty(domain.name);
+    return (
+      domainRepo === normalizedRepo ||
+      domainName === normalizedRepo ||
+      domainRepo === normalizedLabel ||
+      domainName === normalizedLabel
+    );
+  });
+  if (matchingDomain) {
+    return { groupId: "ppv-workspace", groupLabel: "PPV Workspace" };
+  }
+  return { groupId: "other", groupLabel: "Other" };
+}
+
+export function resolveProjectRepoOptions(state: AppViewState): ProjectRepoOption[] {
+  const rows = state.sessionsResult?.sessions ?? [];
+  const seen = new Set<string>();
+  const sessionKeyByRepo = new Map<string, string>();
+  for (const row of rows) {
+    const key = normalizeOptionalString(row.key);
+    if (!key) {
+      continue;
+    }
+    const parsed = parseAgentSessionKey(key);
+    const repoId = normalizeLowercaseStringOrEmpty(parsed?.agentId ?? "main") || "main";
+    if (!sessionKeyByRepo.has(repoId)) {
+      sessionKeyByRepo.set(repoId, key);
+    }
+  }
+
+  const options: ProjectRepoOption[] = [];
+  for (const domain of PPV_WORKSPACE_REGISTRY.domains) {
+    const repoId =
+      normalizeLowercaseStringOrEmpty(domain.repo) || normalizeLowercaseStringOrEmpty(domain.id);
+    if (!repoId || seen.has(repoId)) {
+      continue;
+    }
+    seen.add(repoId);
+    const grouping = resolveProjectGrouping(repoId, domain.name);
+    options.push({
+      id: repoId,
+      label: domain.name,
+      sessionKey:
+        sessionKeyByRepo.get(repoId) ?? (repoId === "main" ? "main" : `agent:${repoId}:main`),
+      title: domain.repo,
+      groupId: grouping.groupId,
+      groupLabel: grouping.groupLabel,
+    });
+  }
+
+  for (const [repoId, key] of sessionKeyByRepo.entries()) {
+    if (seen.has(repoId)) {
+      continue;
+    }
+    seen.add(repoId);
+    const label = resolveAgentGroupLabel(state, repoId);
+    const grouping = resolveProjectGrouping(repoId, label);
+    options.push({
+      id: repoId,
+      label,
+      sessionKey: key,
+      title: key,
+      groupId: grouping.groupId,
+      groupLabel: grouping.groupLabel,
+    });
+  }
+
+  return options.toSorted((a, b) => a.label.localeCompare(b.label));
+}
+
+export function resolveProjectRepoGroups(state: AppViewState): ProjectRepoGroup[] {
+  const repos = resolveProjectRepoOptions(state);
+  const groups = new Map<string, ProjectRepoGroup>();
+  for (const repo of repos) {
+    const existing = groups.get(repo.groupId);
+    if (existing) {
+      existing.repos.push(repo);
+      continue;
+    }
+    groups.set(repo.groupId, { id: repo.groupId, label: repo.groupLabel, repos: [repo] });
+  }
+  return Array.from(groups.values());
+}
+
+export function buildProjectTree(state: AppViewState): ProjectTreeChildNode[] {
+  const registryNodes = state.missionControlRegistry.treeNodes ?? [];
+  const repoByDomainId = new Map(
+    resolveProjectRepoOptions(state)
+      .filter((repo) => repo.id)
+      .map((repo) => [repo.id, repo] as const),
+  );
+  const childrenByParent = new Map<string | null, MissionControlTreeNode[]>();
+  for (const node of registryNodes) {
+    const bucket = childrenByParent.get(node.parentId ?? null) ?? [];
+    bucket.push(node);
+    childrenByParent.set(node.parentId ?? null, bucket);
+  }
+  const buildNode = (node: MissionControlTreeNode): ProjectTreeChildNode => ({
+    id: node.id,
+    label: node.label,
+    kind: node.kind,
+    repo:
+      node.kind === "repo"
+        ? repoByDomainId.get(normalizeLowercaseStringOrEmpty(node.linkedDomainId))
+        : undefined,
+    children: (childrenByParent.get(node.id) ?? []).map(buildNode),
+  });
+  return (childrenByParent.get(null) ?? []).map(buildNode);
+}
+
+function resolveRepoSessionRootKeys(state: AppViewState, repoId: string): Set<string> {
+  const normalizedRepoId = normalizeLowercaseStringOrEmpty(repoId) || "main";
+  const rows = state.sessionsResult?.sessions ?? [];
+  const roots = new Set<string>();
+  for (const row of rows) {
+    const key = normalizeOptionalString(row.key);
+    if (!key) {
+      continue;
+    }
+    const parsed = parseAgentSessionKey(key);
+    const rowRepoId = normalizeLowercaseStringOrEmpty(parsed?.agentId ?? "main") || "main";
+    if (rowRepoId !== normalizedRepoId) {
+      continue;
+    }
+    const parent = normalizeOptionalString(row.spawnedBy);
+    if (!parent) {
+      roots.add(key);
+      continue;
+    }
+    const parentParsed = parseAgentSessionKey(parent);
+    const parentRepoId = normalizeLowercaseStringOrEmpty(parentParsed?.agentId ?? "main") || "main";
+    if (parentRepoId !== normalizedRepoId) {
+      roots.add(key);
+    }
+  }
+  if (roots.size === 0) {
+    roots.add(normalizedRepoId === "main" ? "main" : `agent:${normalizedRepoId}:main`);
+  }
+  if (normalizedRepoId === "main") {
+    roots.add("main");
+  } else {
+    roots.add(`agent:${normalizedRepoId}:main`);
+  }
+  return roots;
+}
+
+function resolveSessionTreeDepth(
+  row: SessionsListResult["sessions"][number] | undefined,
+  byKey: Map<string, SessionsListResult["sessions"][number]>,
+  repoId: string,
+): number {
+  let depth = 0;
+  let parent = normalizeOptionalString(row?.spawnedBy);
+  const seen = new Set<string>();
+  while (parent && !seen.has(parent)) {
+    seen.add(parent);
+    const parentParsed = parseAgentSessionKey(parent);
+    const parentRepoId = normalizeLowercaseStringOrEmpty(parentParsed?.agentId ?? "main") || "main";
+    if (parentRepoId !== repoId) {
+      break;
+    }
+    depth += 1;
+    parent = normalizeOptionalString(byKey.get(parent)?.spawnedBy);
+  }
+  return depth;
+}
+
+function resolveSessionTreeLabel(label: string, depth: number): string {
+  if (depth <= 0) {
+    return label;
+  }
+  return `${"  ".repeat(depth)}↳ ${label}`;
 }
 
 function resolveAgentGroupLabel(state: AppViewState, agentIdRaw: string): string {

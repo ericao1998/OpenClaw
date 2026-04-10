@@ -10,6 +10,7 @@ import {
   renderTab,
   renderSidebarConnectionStatus,
   renderTopbarThemeModeToggle,
+  buildProjectTree,
   switchChatSession,
 } from "./app-render.helpers.ts";
 import { warnQueryToken } from "./app-settings.ts";
@@ -105,8 +106,24 @@ import {
   updateSkillEnabled,
 } from "./controllers/skills.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
-import "./components/dashboard-header.ts";
 import { icons } from "./icons.ts";
+import {
+  applyMissionControlIntakeDraftPatch,
+  applyMissionControlRouteDraft,
+  buildMissionControlIntakeSessionPayload,
+  updateMissionControlDomainOwner,
+  updateMissionControlLaneOwner,
+} from "./mission-control-actions.ts";
+import {
+  type MissionControlIntakeRoute,
+  type MissionControlSessionLane,
+  type MissionControlTreeNodeKind,
+} from "./mission-control-registry.ts";
+import "./components/dashboard-header.ts";
+import {
+  createMissionControlIntakeDraft,
+  saveMissionControlRegistry,
+} from "./mission-control-store.ts";
 import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
 import {
   buildAgentMainSessionKey,
@@ -128,6 +145,7 @@ import { renderDreaming } from "./views/dreaming.ts";
 import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderLoginGate } from "./views/login-gate.ts";
+import { renderMissionControl } from "./views/mission-control.ts";
 import { renderOverview } from "./views/overview.ts";
 
 // Lazy-loaded view modules – deferred so the initial bundle stays small.
@@ -575,6 +593,7 @@ export function renderApp(state: AppViewState) {
                   const isGroupCollapsed = state.settings.navGroupsCollapsed[group.label] ?? false;
                   const hasActiveTab = group.tabs.some((tab) => tab === state.tab);
                   const showItems = navCollapsed || hasActiveTab || !isGroupCollapsed;
+                  const projectTree = group.label === "chat" ? buildProjectTree(state) : [];
 
                   return html`
                     <section class="nav-section ${!showItems ? "nav-section--collapsed" : ""}">
@@ -600,9 +619,180 @@ export function renderApp(state: AppViewState) {
                           `
                         : nothing}
                       <div class="nav-section__items">
-                        ${group.tabs.map((tab) =>
-                          renderTab(state, tab, { collapsed: navCollapsed }),
-                        )}
+                        ${group.tabs.map((tab) => {
+                          if (group.label === "chat" && tab === "sessions" && !navCollapsed) {
+                            const projectExpanded = !(
+                              state.settings.navGroupsCollapsed.project ?? true
+                            );
+                            const renderTreeNode = (
+                              node: (typeof projectTree)[number],
+                              depth = 0,
+                            ): unknown => {
+                              const collapsedKey = `tree:${node.id}`;
+                              const expanded = !(
+                                state.settings.navGroupsCollapsed[collapsedKey] ?? false
+                              );
+                              const hasChildren = node.children.length > 0;
+                              const isRepo = node.kind === "repo" && node.repo;
+                              return html`
+                                <div class="nav-project-group nav-project-group--depth-${depth}">
+                                  <div class="nav-project-group__row">
+                                    <button
+                                      type="button"
+                                      class="nav-project-group__label"
+                                      aria-expanded=${expanded}
+                                      @click=${() => {
+                                        state.applySettings({
+                                          ...state.settings,
+                                          navGroupsCollapsed: {
+                                            ...state.settings.navGroupsCollapsed,
+                                            [collapsedKey]: expanded,
+                                          },
+                                        });
+                                      }}
+                                    >
+                                      <span class="nav-project-group__icon" aria-hidden="true"
+                                        >${hasChildren ? icons.chevronDown : icons.folder}</span
+                                      >
+                                      <span class="nav-project-group__text">${node.label}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      class="nav-project-group__add"
+                                      title="Add child"
+                                      @click=${() => {
+                                        const label = window
+                                          .prompt(
+                                            `Name new ${node.kind === "workspace" ? "repo/module" : node.kind === "repo" ? "chat sub-module" : node.kind === "module" ? "ACP module" : "child"} under ${node.label}`,
+                                          )
+                                          ?.trim();
+                                        if (!label) {
+                                          return;
+                                        }
+                                        const nextKind: MissionControlTreeNodeKind =
+                                          node.kind === "workspace"
+                                            ? "repo"
+                                            : node.kind === "repo"
+                                              ? "module"
+                                              : node.kind === "module"
+                                                ? "chat-module"
+                                                : "acp-module";
+                                        const nextNode = {
+                                          id: `tree:${crypto.randomUUID()}`,
+                                          parentId: node.id,
+                                          kind: nextKind,
+                                          label,
+                                        };
+                                        state.missionControlRegistry = {
+                                          ...state.missionControlRegistry,
+                                          treeNodes: [
+                                            ...(state.missionControlRegistry.treeNodes ?? []),
+                                            nextNode,
+                                          ],
+                                        };
+                                        state.applySettings({
+                                          ...state.settings,
+                                          navGroupsCollapsed: {
+                                            ...state.settings.navGroupsCollapsed,
+                                            [collapsedKey]: false,
+                                            project: false,
+                                          },
+                                        });
+                                      }}
+                                    >
+                                      +
+                                    </button>
+                                  </div>
+                                  ${isRepo && node.repo
+                                    ? html`
+                                        <button
+                                          type="button"
+                                          class="nav-project-item ${state.selectedProjectRepo ===
+                                          node.repo.id
+                                            ? "nav-project-item--active"
+                                            : ""}"
+                                          title=${node.repo.title}
+                                          @click=${() => {
+                                            state.applySettings({
+                                              ...state.settings,
+                                              selectedProjectRepo: node.repo!.id,
+                                              selectedProjectGroup: state.selectedProjectGroup,
+                                              navGroupsCollapsed: {
+                                                ...state.settings.navGroupsCollapsed,
+                                                [collapsedKey]: false,
+                                                project: false,
+                                              },
+                                            });
+                                            state.selectedProjectRepo = node.repo!.id;
+                                            if (state.tab !== "chat") {
+                                              state.setTab("chat");
+                                            }
+                                            switchChatSession(state, node.repo!.sessionKey);
+                                          }}
+                                        >
+                                          <span class="nav-project-item__icon" aria-hidden="true"
+                                            >${icons.folder}</span
+                                          >
+                                          <span class="nav-project-item__text"
+                                            >Open ${node.repo.label}</span
+                                          >
+                                        </button>
+                                      `
+                                    : nothing}
+                                  ${hasChildren
+                                    ? html`<div
+                                        class="nav-project-group__repos ${expanded
+                                          ? ""
+                                          : "nav-project-group__repos--collapsed"}"
+                                      >
+                                        ${node.children.map((child) =>
+                                          renderTreeNode(child, depth + 1),
+                                        )}
+                                      </div>`
+                                    : nothing}
+                                </div>
+                              `;
+                            };
+                            return html`
+                              <div class="nav-project-node">
+                                <button
+                                  type="button"
+                                  class="nav-item nav-item--tree"
+                                  aria-expanded=${projectExpanded}
+                                  @click=${() => {
+                                    const isCollapsed =
+                                      state.settings.navGroupsCollapsed.project ?? true;
+                                    state.applySettings({
+                                      ...state.settings,
+                                      navGroupsCollapsed: {
+                                        ...state.settings.navGroupsCollapsed,
+                                        project: !isCollapsed,
+                                      },
+                                    });
+                                  }}
+                                >
+                                  <span class="nav-item__icon" aria-hidden="true"
+                                    >${icons.folder}</span
+                                  >
+                                  <span class="nav-item__text">${titleForTab(tab)}</span>
+                                  <span class="nav-item__tree-chevron" aria-hidden="true"
+                                    >${icons.chevronDown}</span
+                                  >
+                                </button>
+                                <div
+                                  class="nav-project-tree ${projectExpanded
+                                    ? ""
+                                    : "nav-project-tree--collapsed"}"
+                                >
+                                  <div class="nav-project-list">
+                                    ${projectTree.map((treeNode) => renderTreeNode(treeNode))}
+                                  </div>
+                                </div>
+                              </div>
+                            `;
+                          }
+                          return renderTab(state, tab, { collapsed: navCollapsed });
+                        })}
                       </div>
                     </section>
                   `;
@@ -719,6 +909,99 @@ export function renderApp(state: AppViewState) {
                 ${isChat ? renderChatControls(state) : nothing}
               </div>
             </section>`}
+        ${state.tab === "missionControl"
+          ? renderMissionControl({
+              registry: state.missionControlRegistry,
+              intakeDraft: state.missionControlIntakeDraft,
+              onNavigate: (tab) => state.setTab(tab),
+              onOpenSession: (sessionKey) => {
+                switchChatSession(state, sessionKey);
+                state.setTab("chat" as import("./navigation.ts").Tab);
+              },
+              onCreateLaneSession: async (lane: MissionControlSessionLane) => {
+                const created = await createSession(state, {
+                  label: lane.name,
+                  message: `Mission Control routed work to ${lane.name}. Confirm domain ownership, define the next scoped action, and continue in the correct repo lane.`,
+                });
+                if (!created?.key) {
+                  state.lastError = state.sessionsError ?? "Failed to create lane session.";
+                  return;
+                }
+                state.lastError = null;
+                switchChatSession(state, created.key);
+                state.setTab("chat" as import("./navigation.ts").Tab);
+              },
+              onRouteRequest: (route: MissionControlIntakeRoute) => {
+                state.missionControlIntakeDraft = applyMissionControlRouteDraft(
+                  state.missionControlIntakeDraft,
+                  route,
+                );
+              },
+              onDomainOwnerChange: (domainId, owner) => {
+                state.missionControlRegistry = updateMissionControlDomainOwner(
+                  state.missionControlRegistry,
+                  domainId,
+                  owner,
+                );
+                void saveMissionControlRegistry(state);
+              },
+              onLaneOwnerChange: (laneId, owner) => {
+                state.missionControlRegistry = updateMissionControlLaneOwner(
+                  state.missionControlRegistry,
+                  laneId,
+                  owner,
+                );
+                void saveMissionControlRegistry(state);
+              },
+              onIntakeDraftChange: (patch) => {
+                state.missionControlIntakeDraft = applyMissionControlIntakeDraftPatch(
+                  state.missionControlIntakeDraft,
+                  patch,
+                  state.missionControlRegistry,
+                );
+              },
+              onSubmitIntake: async () => {
+                const payload = buildMissionControlIntakeSessionPayload(
+                  state.missionControlRegistry,
+                  state.missionControlIntakeDraft,
+                );
+                if (!payload.ok) {
+                  state.lastError = payload.error;
+                  return;
+                }
+                const created = await createSession(state, {
+                  label: payload.label,
+                  message: payload.message,
+                });
+                if (!created?.key) {
+                  state.lastError =
+                    state.sessionsError ?? "Failed to create routed Mission Control session.";
+                  return;
+                }
+                state.lastError = null;
+                state.missionControlIntakeDraft = createMissionControlIntakeDraft(
+                  state.missionControlRegistry,
+                );
+                switchChatSession(state, created.key);
+                state.setTab("chat" as import("./navigation.ts").Tab);
+              },
+              onResetIntake: () => {
+                state.missionControlIntakeDraft = createMissionControlIntakeDraft(
+                  state.missionControlRegistry,
+                );
+              },
+              summary: {
+                connected: state.connected,
+                sessionsCount: state.sessionsResult?.count ?? 0,
+                activeInstances: state.presenceEntries.length,
+                agentsCount: state.agentsList?.agents?.length ?? 0,
+                cronJobs: state.cronJobs.length,
+                defaultSessionKey:
+                  state.settings.lastActiveSessionKey || state.settings.sessionKey || null,
+              },
+              sessions: state.sessionsResult?.sessions ?? [],
+            })
+          : nothing}
         ${state.tab === "overview"
           ? renderOverview({
               connected: state.connected,
@@ -1611,6 +1894,7 @@ export function renderApp(state: AppViewState) {
               onNewSession: async () => {
                 const created = await createSession(state, {
                   agentId: resolvedAgentId ?? "main",
+                  reuseExisting: true,
                 });
                 if (!created?.key) {
                   state.lastError = state.sessionsError ?? "Failed to create a new session.";

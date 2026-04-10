@@ -21,6 +21,7 @@ function createState(request: RequestFn, overrides: Partial<SessionsState> = {})
   return {
     client: { request } as unknown as SessionsState["client"],
     connected: true,
+    sessionKey: "main",
     sessionsLoading: false,
     sessionsResult: null,
     sessionsError: null,
@@ -171,6 +172,41 @@ describe("createSession", () => {
     expect(created).toBeNull();
     expect(state.sessionsError).toBe("Error: gateway did not return a session key");
   });
+
+  it("reuses the newest existing dashboard session for the same agent when requested", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "sessions.list") {
+        return undefined;
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request, {
+      sessionKey: "agent:main:main",
+      sessionsResult: {
+        ts: 1,
+        path: "",
+        count: 2,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [
+          {
+            key: "agent:main:dashboard:test-123",
+            kind: "direct",
+            updatedAt: 20,
+          },
+          {
+            key: "agent:main:main",
+            kind: "direct",
+            updatedAt: 10,
+          },
+        ],
+      },
+    });
+
+    const created = await createSession(state, { agentId: "main", reuseExisting: true });
+
+    expect(created).toEqual({ key: "agent:main:dashboard:test-123" });
+    expect(request).not.toHaveBeenCalledWith("sessions.create", expect.anything());
+  });
 });
 
 describe("loadSessions", () => {
@@ -181,7 +217,7 @@ describe("loadSessions", () => {
           ts: 1,
           path: "(multiple)",
           count: 1,
-          defaults: {},
+          defaults: { modelProvider: null, model: null, contextTokens: null },
           sessions: [
             {
               key: "agent:main:main",
@@ -219,7 +255,7 @@ describe("loadSessions", () => {
         ts: 0,
         path: "(multiple)",
         count: 1,
-        defaults: {},
+        defaults: { modelProvider: null, model: null, contextTokens: null },
         sessions: [
           {
             key: "agent:main:main",

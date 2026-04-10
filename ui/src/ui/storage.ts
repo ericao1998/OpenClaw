@@ -47,6 +47,8 @@ export type UiSettings = {
   token: string;
   sessionKey: string;
   lastActiveSessionKey: string;
+  selectedProjectRepo: string;
+  selectedProjectGroup: string;
   theme: ThemeName;
   themeMode: ThemeMode;
   chatFocusMode: boolean;
@@ -185,6 +187,8 @@ export function loadSettings(): UiSettings {
     token: loadSessionToken(defaultUrl),
     sessionKey: "main",
     lastActiveSessionKey: "main",
+    selectedProjectRepo: "main",
+    selectedProjectGroup: "workspace",
     theme: "claw",
     themeMode: "system",
     chatFocusMode: false,
@@ -221,6 +225,14 @@ export function loadSettings(): UiSettings {
       token: loadSessionToken(gatewayUrl),
       sessionKey: scopedSessionSelection.sessionKey,
       lastActiveSessionKey: scopedSessionSelection.lastActiveSessionKey,
+      selectedProjectRepo:
+        normalizeOptionalString(
+          (parsed as { selectedProjectRepo?: unknown }).selectedProjectRepo,
+        ) ?? defaults.selectedProjectRepo,
+      selectedProjectGroup:
+        normalizeOptionalString(
+          (parsed as { selectedProjectGroup?: unknown }).selectedProjectGroup,
+        ) ?? defaults.selectedProjectGroup,
       theme,
       themeMode: mode,
       chatFocusMode:
@@ -305,6 +317,8 @@ function persistSettings(next: UiSettings) {
   );
   const persisted: PersistedUiSettings = {
     gatewayUrl: next.gatewayUrl,
+    selectedProjectRepo: next.selectedProjectRepo,
+    selectedProjectGroup: next.selectedProjectGroup,
     theme: next.theme,
     themeMode: next.themeMode,
     chatFocusMode: next.chatFocusMode,

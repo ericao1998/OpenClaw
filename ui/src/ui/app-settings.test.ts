@@ -36,6 +36,8 @@ type SettingsHost = {
     token: string;
     sessionKey: string;
     lastActiveSessionKey: string;
+    selectedProjectRepo: string;
+    selectedProjectGroup: string;
     theme: ThemeName;
     themeMode: ThemeMode;
     chatFocusMode: boolean;
@@ -125,6 +127,8 @@ const createHost = (tab: Tab): SettingsHost => ({
     token: "",
     sessionKey: "main",
     lastActiveSessionKey: "main",
+    selectedProjectRepo: "main",
+    selectedProjectGroup: "workspace",
     theme: "claw",
     themeMode: "system",
     chatFocusMode: false,

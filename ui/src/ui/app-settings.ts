@@ -25,6 +25,7 @@ import { loadPresence } from "./controllers/presence.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import { loadSkills } from "./controllers/skills.ts";
 import { loadUsage } from "./controllers/usage.ts";
+import { loadMissionControlRegistry } from "./mission-control-store.ts";
 import {
   inferBasePathFromPathname,
   normalizeBasePath,
@@ -42,6 +43,8 @@ import { resetChatViewState } from "./views/chat.ts";
 
 type SettingsHost = {
   settings: UiSettings;
+  selectedProjectRepo?: string;
+  selectedProjectGroup?: string;
   password?: string;
   theme: ThemeName;
   themeMode: ThemeMode;
@@ -80,6 +83,8 @@ export function applySettings(host: SettingsHost, next: UiSettings) {
       "main",
   };
   host.settings = normalized;
+  host.selectedProjectRepo = normalized.selectedProjectRepo;
+  host.selectedProjectGroup = normalized.selectedProjectGroup;
   saveSettings(normalized);
   if (next.theme !== host.theme || next.themeMode !== host.themeMode) {
     host.theme = next.theme;
@@ -251,6 +256,9 @@ export async function refreshActiveTab(host: SettingsHost) {
   }
   if (host.tab === "sessions") {
     await loadSessions(host as unknown as OpenClawApp);
+  }
+  if (host.tab === "missionControl") {
+    await loadMissionControlRegistry(host as unknown as OpenClawApp);
   }
   if (host.tab === "cron") {
     await loadCron(host);

@@ -773,6 +773,18 @@
   flex-wrap: wrap;
 }
 
+.chat-controls__session-stack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-controls__worktree {
+  min-width: 180px;
+  max-width: 280px;
+}
+
 .chat-controls__model {
   min-width: 124px;
   max-width: 206px;

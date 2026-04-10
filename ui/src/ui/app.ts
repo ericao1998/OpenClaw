@@ -69,6 +69,12 @@ import type {
   SkillMessage,
 } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
+import type { MissionControlWorkspaceRegistry } from "./mission-control-registry.ts";
+import {
+  createDefaultMissionControlRegistry,
+  createMissionControlIntakeDraft,
+  type MissionControlIntakeDraft,
+} from "./mission-control-store.ts";
 import type { Tab } from "./navigation.ts";
 import { resolveAgentIdFromSessionKey } from "./session-key.ts";
 import { loadSettings, type UiSettings } from "./storage.ts";
@@ -155,8 +161,15 @@ export class OpenClawApp extends LitElement {
   @state() assistantAvatar = bootAssistantIdentity.avatar;
   @state() assistantAgentId = bootAssistantIdentity.agentId ?? null;
   @state() serverVersion: string | null = null;
+  @state() missionControlRegistry: MissionControlWorkspaceRegistry =
+    createDefaultMissionControlRegistry();
+  @state() missionControlIntakeDraft: MissionControlIntakeDraft = createMissionControlIntakeDraft(
+    this.missionControlRegistry,
+  );
 
   @state() sessionKey = this.settings.sessionKey;
+  @state() selectedProjectRepo = this.settings.selectedProjectRepo;
+  @state() selectedProjectGroup = this.settings.selectedProjectGroup;
   @state() chatLoading = false;
   @state() chatSending = false;
   @state() chatMessage = "";

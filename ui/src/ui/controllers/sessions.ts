@@ -1,5 +1,6 @@
 import { toNumber } from "../format.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
+import { parseAgentSessionKey } from "../session-key.ts";
 import type {
   SessionCompactionCheckpoint,
   SessionsCompactionBranchResult,
@@ -15,6 +16,7 @@ import {
 export type SessionsState = {
   client: GatewayBrowserClient | null;
   connected: boolean;
+  sessionKey?: string;
   sessionsLoading: boolean;
   sessionsResult: SessionsListResult | null;
   sessionsError: string | null;
@@ -185,6 +187,7 @@ export async function createSession(
     parentSessionKey?: string;
     model?: string;
     message?: string;
+    reuseExisting?: boolean;
   },
 ): Promise<{ key: string } | null> {
   if (!state.client || !state.connected) {
@@ -192,6 +195,26 @@ export async function createSession(
   }
   state.sessionsError = null;
   try {
+    const requestedAgentId = params?.agentId?.trim();
+    if (params?.reuseExisting && !params?.key && !params?.parentSessionKey && !params?.message) {
+      const existingSessions = [...(state.sessionsResult?.sessions ?? [])].toSorted(
+        (a, b) => (Number(b?.updatedAt) || 0) - (Number(a?.updatedAt) || 0),
+      );
+      const reusable = existingSessions.find((row) => {
+        if (!row?.key || row.key === state.sessionKey) {
+          return false;
+        }
+        const parsed = parseAgentSessionKey(row.key);
+        if (!parsed?.rest.startsWith("dashboard:")) {
+          return false;
+        }
+        const rowAgentId = parsed.agentId ?? "main";
+        return rowAgentId === (requestedAgentId || "main");
+      });
+      if (reusable?.key) {
+        return { key: reusable.key };
+      }
+    }
     const result = (await state.client.request("sessions.create", {
       ...(params?.agentId ? { agentId: params.agentId } : {}),
       ...(params?.key ? { key: params.key } : {}),

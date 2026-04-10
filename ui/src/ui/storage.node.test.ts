@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { loadSettings, saveSettings } from "./storage.ts";
 
+const PROJECT_SELECTION = {
+  selectedProjectRepo: "main",
+  selectedProjectGroup: "workspace",
+} as const;
+
 function setTestLocation(params: { protocol: string; host: string; pathname: string }) {
   vi.stubGlobal("location", {
     protocol: params.protocol,
@@ -121,6 +126,8 @@ describe("loadSettings default gateway URL derivation", () => {
     const scopedKey = "openclaw.control.settings.v1:wss://gateway.example:8443/openclaw";
     expect(JSON.parse(localStorage.getItem(scopedKey) ?? "{}")).toEqual({
       gatewayUrl: "wss://gateway.example:8443/openclaw",
+      selectedProjectRepo: "main",
+      selectedProjectGroup: "workspace",
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -154,6 +161,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "session-token",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -186,6 +194,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "gateway-a-token",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -203,6 +212,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -234,6 +244,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "memory-only-token",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -253,6 +264,8 @@ describe("loadSettings default gateway URL derivation", () => {
     const scopedKey = `openclaw.control.settings.v1:${gwUrl}`;
     expect(JSON.parse(localStorage.getItem(scopedKey) ?? "{}")).toEqual({
       gatewayUrl: gwUrl,
+      selectedProjectRepo: "main",
+      selectedProjectGroup: "workspace",
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -286,6 +299,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "stale-token",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -302,6 +316,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -331,6 +346,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      ...PROJECT_SELECTION,
       theme: "dash",
       themeMode: "light",
       chatFocusMode: false,
@@ -364,6 +380,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "",
       sessionKey: "agent:test_old:main",
       lastActiveSessionKey: "agent:test_old:main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,
@@ -409,6 +426,7 @@ describe("loadSettings default gateway URL derivation", () => {
       token: "",
       sessionKey: "agent:current:main",
       lastActiveSessionKey: "agent:current:main",
+      ...PROJECT_SELECTION,
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,

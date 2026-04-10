@@ -65,6 +65,8 @@ function createHost(agentsPanel: AgentsPanel): Parameters<typeof refreshActiveTa
       token: "",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      selectedProjectRepo: "main",
+      selectedProjectGroup: "workspace",
       theme: "claw",
       themeMode: "system",
       chatFocusMode: false,

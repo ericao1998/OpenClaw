@@ -10,6 +10,8 @@ import type {
   SkillMessage,
 } from "./controllers/skills.ts";
 import type { GatewayBrowserClient, GatewayHelloOk } from "./gateway.ts";
+import type { MissionControlWorkspaceRegistry } from "./mission-control-registry.ts";
+import type { MissionControlIntakeDraft } from "./mission-control-store.ts";
 import type { Tab } from "./navigation.ts";
 import type { UiSettings } from "./storage.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
@@ -62,6 +64,10 @@ export type AppViewState = {
   assistantAvatar: string | null;
   assistantAgentId: string | null;
   sessionKey: string;
+  selectedProjectRepo: string;
+  selectedProjectGroup: string;
+  missionControlRegistry: MissionControlWorkspaceRegistry;
+  missionControlIntakeDraft: MissionControlIntakeDraft;
   chatLoading: boolean;
   chatSending: boolean;
   chatMessage: string;

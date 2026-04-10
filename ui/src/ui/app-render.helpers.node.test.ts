@@ -316,6 +316,8 @@ describe("switchChatSession", () => {
       locale: "en",
       sessionKey: "main",
       lastActiveSessionKey: "main",
+      selectedProjectRepo: "main",
+      selectedProjectGroup: "workspace",
       theme: "claw",
       themeMode: "dark",
       splitRatio: 0.6,
