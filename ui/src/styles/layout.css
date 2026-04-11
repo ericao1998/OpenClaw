@@ -628,8 +628,8 @@
 }
 
 .nav-project-node {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 4px;
   min-height: 0;
 }
@@ -639,18 +639,20 @@
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
+  min-height: 0;
 }
 
 .nav-project-tree {
   min-height: 0;
   height: 100%;
-  max-height: 320px;
+  max-height: clamp(220px, 42vh, 420px);
   overflow-y: auto;
   overflow-x: hidden;
   transition: max-height 180ms ease, opacity 180ms ease, margin 180ms ease;
   opacity: 1;
   margin-top: 0;
   padding-right: 4px;
+  border-radius: 10px;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--border-strong) 72%, transparent) transparent;
   overscroll-behavior: contain;
