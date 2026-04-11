@@ -652,6 +652,13 @@
   padding: 4px 0 10px 0;
 }
 
+.nav-project-node > .nav-project-tree,
+.nav-section__items .nav-project-node > .nav-project-tree,
+.sidebar-nav .nav-project-node > .nav-project-tree {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
 .nav-project-tree--collapsed {
   display: none;
 }
