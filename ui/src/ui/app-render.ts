@@ -12,9 +12,11 @@ import {
   renderTopbarThemeModeToggle,
   buildProjectTree,
   switchChatSession,
+  type ProjectTreeChildNode,
 } from "./app-render.helpers.ts";
 import { warnQueryToken } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
+import { extractText } from "./chat/message-extract.ts";
 import { loadAgentFileContent, loadAgentFiles, saveAgentFile } from "./controllers/agent-files.ts";
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
@@ -115,6 +117,7 @@ import {
   updateMissionControlLaneOwner,
 } from "./mission-control-actions.ts";
 import {
+  PPV_WORKSPACE_REGISTRY,
   type MissionControlIntakeRoute,
   type MissionControlSessionLane,
   type MissionControlTreeNodeKind,
@@ -130,6 +133,7 @@ import {
   parseAgentSessionKey,
   resolveAgentIdFromSessionKey,
 } from "./session-key.ts";
+import { normalizeLowercaseStringOrEmpty } from "./string-coerce.ts";
 import { agentLogoUrl } from "./views/agents-utils.ts";
 import {
   resolveAgentConfig,
@@ -248,6 +252,670 @@ function uniquePreserveOrder(values: string[]): string[] {
     output.push(normalized);
   }
   return output;
+}
+
+const MIN_SIDEBAR_NAV_WIDTH = 200;
+const MAX_SIDEBAR_NAV_WIDTH = 400;
+const DESKTOP_NAV_BREAKPOINT_PX = 1100;
+const FALLBACK_SIDEBAR_NAV_WIDTH = 258;
+
+function clampSidebarNavWidth(width: number): number {
+  return Math.max(MIN_SIDEBAR_NAV_WIDTH, Math.min(MAX_SIDEBAR_NAV_WIDTH, Math.round(width)));
+}
+
+function resolveSidebarNavWidth(state: AppViewState): number {
+  const configuredWidth =
+    typeof state.settings.navWidth === "number"
+      ? state.settings.navWidth
+      : FALLBACK_SIDEBAR_NAV_WIDTH;
+  return clampSidebarNavWidth(configuredWidth);
+}
+
+function updateSidebarNavWidth(state: AppViewState, nextWidth: number) {
+  const clampedWidth = clampSidebarNavWidth(nextWidth);
+  if (clampedWidth === resolveSidebarNavWidth(state)) {
+    return;
+  }
+  state.applySettings({
+    ...state.settings,
+    navWidth: clampedWidth,
+  });
+}
+
+function startSidebarResize(state: AppViewState, event: MouseEvent) {
+  if (event.button !== 0) {
+    return;
+  }
+  if (
+    state.settings.navCollapsed ||
+    window.matchMedia(`(max-width: ${DESKTOP_NAV_BREAKPOINT_PX}px)`).matches
+  ) {
+    return;
+  }
+  const startX = event.clientX;
+  const startWidth = resolveSidebarNavWidth(state);
+  const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  const rootStyle = document.documentElement.style;
+  const previousCursor = rootStyle.cursor;
+  const previousUserSelect = rootStyle.userSelect;
+
+  const finishResize = () => {
+    rootStyle.cursor = previousCursor;
+    rootStyle.userSelect = previousUserSelect;
+    target?.classList.remove("sidebar-resizer--dragging");
+    document.removeEventListener("mousemove", handleMouseMove);
+    document.removeEventListener("mouseup", finishResize);
+  };
+
+  const handleMouseMove = (moveEvent: MouseEvent) => {
+    updateSidebarNavWidth(state, startWidth + (moveEvent.clientX - startX));
+  };
+
+  rootStyle.cursor = "col-resize";
+  rootStyle.userSelect = "none";
+  target?.classList.add("sidebar-resizer--dragging");
+  document.addEventListener("mousemove", handleMouseMove);
+  document.addEventListener("mouseup", finishResize);
+  event.preventDefault();
+}
+
+function handleSidebarResizeKeydown(state: AppViewState, event: KeyboardEvent) {
+  if (window.matchMedia(`(max-width: ${DESKTOP_NAV_BREAKPOINT_PX}px)`).matches) {
+    return;
+  }
+  const currentWidth = resolveSidebarNavWidth(state);
+  let nextWidth: number | null = null;
+  switch (event.key) {
+    case "ArrowLeft":
+      nextWidth = currentWidth - 16;
+      break;
+    case "ArrowRight":
+      nextWidth = currentWidth + 16;
+      break;
+    case "Home":
+      nextWidth = MIN_SIDEBAR_NAV_WIDTH;
+      break;
+    case "End":
+      nextWidth = MAX_SIDEBAR_NAV_WIDTH;
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+  updateSidebarNavWidth(state, nextWidth);
+}
+
+function resolveMissionControlChildKinds(
+  kind: MissionControlTreeNodeKind,
+): MissionControlTreeNodeKind[] {
+  switch (kind) {
+    case "workspace":
+      return ["repo"];
+    case "repo":
+    case "module":
+      return ["module", "chat-module", "acp-module"];
+    case "chat-module":
+    case "acp-module":
+      return [];
+  }
+}
+
+function describeMissionControlTreeNodeKind(kind: MissionControlTreeNodeKind): string {
+  switch (kind) {
+    case "workspace":
+      return "workspace";
+    case "repo":
+      return "project root";
+    case "module":
+      return "module";
+    case "chat-module":
+      return "chat module";
+    case "acp-module":
+      return "ACP module";
+  }
+}
+
+function buildMissionControlTreeNodeKindAliases(kind: MissionControlTreeNodeKind): string[] {
+  return [
+    kind,
+    describeMissionControlTreeNodeKind(kind),
+    kind === "chat-module" ? "chat" : "",
+    kind === "chat-module" ? "chat module" : "",
+    kind === "acp-module" ? "acp" : "",
+    kind === "acp-module" ? "acp module" : "",
+    kind === "module" ? "submodule" : "",
+    kind === "module" ? "sub module" : "",
+  ]
+    .map((value) => normalizeLowercaseStringOrEmpty(value))
+    .filter(Boolean);
+}
+
+function resolveMissionControlTreeNodeKindAlias(
+  childKinds: MissionControlTreeNodeKind[],
+  input: string,
+): MissionControlTreeNodeKind | null {
+  const normalizedInput = normalizeLowercaseStringOrEmpty(input);
+  if (!normalizedInput) {
+    return null;
+  }
+  return (
+    childKinds.find((kind) =>
+      buildMissionControlTreeNodeKindAliases(kind).includes(normalizedInput),
+    ) ?? null
+  );
+}
+
+function promptForMissionControlChildLabel(kind: MissionControlTreeNodeKind, parentLabel: string) {
+  return window
+    .prompt(`Name new ${describeMissionControlTreeNodeKind(kind)} under ${parentLabel}`)
+    ?.trim();
+}
+
+function resolveMissionControlDomainLinkId(label: string): string | undefined {
+  const normalizedLabel = normalizeLowercaseStringOrEmpty(label);
+  if (!normalizedLabel) {
+    return undefined;
+  }
+  const match = PPV_WORKSPACE_REGISTRY.domains.find((domain) => {
+    const aliases = [domain.id, domain.name, domain.repo].map((value) =>
+      normalizeLowercaseStringOrEmpty(value),
+    );
+    return aliases.includes(normalizedLabel);
+  });
+  return match?.id;
+}
+
+function appendMissionControlTreeNode(
+  treeNodes: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>,
+  nextNode: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>[number],
+) {
+  return [...treeNodes, nextNode];
+}
+
+function collectProjectTreeNodeIds(node: ProjectTreeChildNode): string[] {
+  return [node.id, ...node.children.flatMap((child) => collectProjectTreeNodeIds(child))];
+}
+
+function resolveMissionControlWorkspaceNodeId(
+  state: AppViewState,
+  treeNodes: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>,
+): string {
+  const workspaceNode = treeNodes.find(
+    (entry) => entry.kind === "workspace" && (entry.parentId ?? null) === null,
+  );
+  return workspaceNode?.id ?? `workspace:${state.missionControlRegistry.id}`;
+}
+
+function ensureMissionControlWorkspaceNode(
+  registry: AppViewState["missionControlRegistry"],
+  treeNodes: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>,
+) {
+  const existingWorkspaceNode = treeNodes.find(
+    (node) => node.kind === "workspace" && (node.parentId ?? null) === null,
+  );
+  if (existingWorkspaceNode) {
+    return {
+      treeNodes,
+      workspaceNode: existingWorkspaceNode,
+    };
+  }
+  const workspaceNode = {
+    id: `workspace:${registry.id}`,
+    parentId: null,
+    kind: "workspace" as const,
+    label: `${registry.name} Workspace`,
+  };
+  return {
+    treeNodes: appendMissionControlTreeNode(treeNodes, workspaceNode),
+    workspaceNode,
+  };
+}
+
+function linkMissionControlTreeNodeSession(
+  treeNodes: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>,
+  nodeId: string,
+  sessionKey: string,
+) {
+  return treeNodes.map((node) =>
+    node.id === nodeId
+      ? {
+          ...node,
+          linkedSessionKey: sessionKey,
+        }
+      : node,
+  );
+}
+
+function buildProjectTreeSessionLabel(node: ProjectTreeChildNode): string {
+  return node.pathLabels.join(" / ");
+}
+
+function buildProjectTreeSessionMessage(node: ProjectTreeChildNode): string {
+  const scope = buildProjectTreeSessionLabel(node);
+  switch (node.kind) {
+    case "acp-module":
+      return `Mission Control ACP session for ${scope}. Use this session for ACP-specific orchestration, tools, and follow-up work.`;
+    case "chat-module":
+      return `Mission Control chat session for ${scope}. Keep work for this grouped module in this chat and continue with the next scoped action.`;
+    case "repo":
+      return `Mission Control project session for ${scope}. Keep this work grouped under the project root and continue with the next scoped action.`;
+    default:
+      return `Mission Control session for ${scope}. Continue the scoped project work in this grouped context.`;
+  }
+}
+
+function createMissionControlTreeChildNode(
+  state: AppViewState,
+  options: {
+    treeNodes?: NonNullable<AppViewState["missionControlRegistry"]["treeNodes"]>;
+    parentId: string | null;
+    parentKind: MissionControlTreeNodeKind;
+    parentLabel: string;
+    requestedKind?: MissionControlTreeNodeKind;
+    expandKeys?: string[];
+  },
+) {
+  const childKinds = resolveMissionControlChildKinds(options.parentKind);
+  if (childKinds.length === 0) {
+    return;
+  }
+  const requestedKind =
+    options.requestedKind && childKinds.includes(options.requestedKind)
+      ? options.requestedKind
+      : null;
+  let nextKind = requestedKind ?? childKinds[0];
+  let label = "";
+  if (requestedKind) {
+    label = promptForMissionControlChildLabel(requestedKind, options.parentLabel) ?? "";
+  } else if (childKinds.length === 1) {
+    label = promptForMissionControlChildLabel(nextKind, options.parentLabel) ?? "";
+  } else {
+    const rawInput = window
+      .prompt(
+        `Name new item under ${options.parentLabel}. Use a plain name for a module, or prefix with "chat:" / "acp:".`,
+      )
+      ?.trim();
+    if (!rawInput) {
+      return;
+    }
+    const prefixedMatch = rawInput.match(/^([^:]+):(.*)$/);
+    if (prefixedMatch) {
+      const requestedKind = resolveMissionControlTreeNodeKindAlias(
+        childKinds,
+        prefixedMatch[1] ?? "",
+      );
+      if (!requestedKind) {
+        state.lastError = `Unknown child type "${prefixedMatch[1]?.trim()}". Use "module:", "chat:", or "acp:", or enter a plain name for a module.`;
+        return;
+      }
+      const requestedLabel = prefixedMatch[2]?.trim() ?? "";
+      if (!requestedLabel) {
+        const promptedLabel = promptForMissionControlChildLabel(requestedKind, options.parentLabel);
+        if (!promptedLabel) {
+          return;
+        }
+        nextKind = requestedKind;
+        label = promptedLabel;
+      } else {
+        nextKind = requestedKind;
+        label = requestedLabel;
+      }
+    } else {
+      const requestedKind = resolveMissionControlTreeNodeKindAlias(childKinds, rawInput);
+      if (requestedKind) {
+        const promptedLabel = promptForMissionControlChildLabel(requestedKind, options.parentLabel);
+        if (!promptedLabel) {
+          return;
+        }
+        nextKind = requestedKind;
+        label = promptedLabel;
+      } else {
+        nextKind = childKinds.includes("module") ? "module" : childKinds[0];
+        label = rawInput;
+      }
+    }
+  }
+  if (!label) {
+    return;
+  }
+  const baseTreeNodes = options.treeNodes ?? state.missionControlRegistry.treeNodes ?? [];
+  const nextNode = {
+    id: `tree:${crypto.randomUUID()}`,
+    parentId: options.parentId,
+    kind: nextKind,
+    label,
+    ...(nextKind === "repo"
+      ? {
+          linkedDomainId: resolveMissionControlDomainLinkId(label),
+        }
+      : {}),
+  };
+  state.missionControlRegistry = {
+    ...state.missionControlRegistry,
+    treeNodes: appendMissionControlTreeNode(baseTreeNodes, nextNode),
+  };
+  const nextCollapsed: AppViewState["settings"]["navGroupsCollapsed"] = {
+    ...state.settings.navGroupsCollapsed,
+    project: false,
+  };
+  for (const key of options.expandKeys ?? []) {
+    nextCollapsed[key] = false;
+  }
+  state.applySettings({
+    ...state.settings,
+    navGroupsCollapsed: nextCollapsed,
+  });
+  state.lastError = null;
+  void saveMissionControlRegistry(state);
+}
+
+function removeMissionControlTreeNode(state: AppViewState, node: ProjectTreeChildNode) {
+  if (node.kind === "workspace") {
+    return;
+  }
+  const idsToRemove = new Set(collectProjectTreeNodeIds(node));
+  const nestedCount = idsToRemove.size - 1;
+  const confirmed = window.confirm(
+    `Remove ${node.label}${nestedCount > 0 ? ` and ${nestedCount} nested item${nestedCount === 1 ? "" : "s"}` : ""} from the project tree? Existing chat sessions will not be deleted.`,
+  );
+  if (!confirmed) {
+    return;
+  }
+  const currentTreeNodes = state.missionControlRegistry.treeNodes ?? [];
+  const nextTreeNodes = currentTreeNodes.filter((entry) => !idsToRemove.has(entry.id));
+  const nextCollapsed: AppViewState["settings"]["navGroupsCollapsed"] = {
+    ...state.settings.navGroupsCollapsed,
+  };
+  for (const id of idsToRemove) {
+    delete nextCollapsed[`tree:${id}`];
+  }
+  const nextSelectedProjectGroup = idsToRemove.has(state.selectedProjectGroup)
+    ? resolveMissionControlWorkspaceNodeId(state, nextTreeNodes)
+    : state.selectedProjectGroup;
+  const nextSelectedProjectRepo =
+    node.kind === "repo" && state.selectedProjectRepo === (node.repoContext?.id ?? "")
+      ? "main"
+      : state.selectedProjectRepo;
+  state.missionControlRegistry = {
+    ...state.missionControlRegistry,
+    treeNodes: nextTreeNodes,
+  };
+  state.selectedProjectGroup = nextSelectedProjectGroup;
+  state.selectedProjectRepo = nextSelectedProjectRepo;
+  state.applySettings({
+    ...state.settings,
+    selectedProjectGroup: nextSelectedProjectGroup,
+    selectedProjectRepo: nextSelectedProjectRepo,
+    navGroupsCollapsed: nextCollapsed,
+  });
+  state.lastError = null;
+  void saveMissionControlRegistry(state);
+}
+
+function isProjectTreeFolderNode(node: ProjectTreeChildNode): boolean {
+  return node.kind === "workspace" || node.kind === "repo" || node.kind === "module";
+}
+
+function resolveProjectTreeSessionLeafLabel(node: ProjectTreeChildNode): string {
+  return node.label;
+}
+
+function resolveProjectTreeSessionLeafIcon(node: ProjectTreeChildNode) {
+  return node.kind === "acp-module" ? icons.link : icons.messageSquare;
+}
+
+type ProjectTreeNodeMatch = {
+  node: ProjectTreeChildNode;
+  parent: ProjectTreeChildNode | null;
+};
+
+function findProjectTreeNodeMatch(
+  nodes: ProjectTreeChildNode[],
+  targetId: string,
+  parent: ProjectTreeChildNode | null = null,
+): ProjectTreeNodeMatch | null {
+  for (const node of nodes) {
+    if (node.id === targetId) {
+      return { node, parent };
+    }
+    const nested = findProjectTreeNodeMatch(node.children, targetId, node);
+    if (nested) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function normalizeProjectTreeHandoffText(text: string | null): string {
+  const collapsed = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!collapsed) {
+    return "";
+  }
+  return collapsed.length > 280 ? `${collapsed.slice(0, 277).trimEnd()}...` : collapsed;
+}
+
+function collectProjectTreeRecentContext(
+  messages: unknown[],
+  role: "user" | "assistant",
+  limit = 2,
+): string[] {
+  const collected: string[] = [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index] as { role?: unknown } | null;
+    if (normalizeLowercaseStringOrEmpty(message?.role as string | undefined) !== role) {
+      continue;
+    }
+    const text = normalizeProjectTreeHandoffText(extractText(message));
+    if (!text || collected.includes(text)) {
+      continue;
+    }
+    collected.push(text);
+    if (collected.length >= limit) {
+      break;
+    }
+  }
+  return collected.toReversed();
+}
+
+async function loadProjectTreeSessionMessages(
+  state: AppViewState,
+  sessionKey: string,
+): Promise<unknown[]> {
+  if (
+    state.sessionKey === sessionKey &&
+    Array.isArray(state.chatMessages) &&
+    state.chatMessages.length > 0
+  ) {
+    return state.chatMessages;
+  }
+  if (!state.client || !state.connected) {
+    return [];
+  }
+  try {
+    const response = (await state.client.request("chat.history", {
+      sessionKey,
+      limit: 40,
+    })) as { messages?: unknown[] } | null;
+    return Array.isArray(response?.messages) ? response.messages : [];
+  } catch {
+    return [];
+  }
+}
+
+function buildProjectTreeAcpHandoffMessage(
+  scope: string,
+  parentSessionKey: string,
+  messages: unknown[],
+): string {
+  const userContext = collectProjectTreeRecentContext(messages, "user");
+  const assistantContext = collectProjectTreeRecentContext(messages, "assistant");
+  const parts = [
+    `Mission Control ACP handoff for ${scope}.`,
+    "",
+    "This ACP lane was spawned from the main chat for the same folder. Treat the main chat as the source of truth and use this lane for focused execution work.",
+    "",
+    `Parent session: ${parentSessionKey}`,
+  ];
+  if (userContext.length > 0) {
+    parts.push("", "Recent user context:");
+    for (const entry of userContext) {
+      parts.push(`- ${entry}`);
+    }
+  }
+  if (assistantContext.length > 0) {
+    parts.push("", "Recent assistant context:");
+    for (const entry of assistantContext) {
+      parts.push(`- ${entry}`);
+    }
+  }
+  parts.push(
+    "",
+    "Use this ACP lane for implementation, investigation, or validation. Report back with findings, concrete changes, validation, and blockers.",
+  );
+  return parts.join("\n");
+}
+
+async function createLinkedProjectTreeSession(
+  state: AppViewState,
+  node: ProjectTreeChildNode,
+  options: {
+    scopedRepoId: string;
+    parentSessionKey?: string;
+    message?: string;
+  },
+): Promise<string | null> {
+  const created = await createSession(state, {
+    agentId: options.scopedRepoId,
+    label: buildProjectTreeSessionLabel(node),
+    message: options.message ?? buildProjectTreeSessionMessage(node),
+    parentSessionKey: options.parentSessionKey,
+  });
+  if (!created?.key) {
+    state.lastError =
+      state.sessionsError ??
+      `Failed to create ${describeMissionControlTreeNodeKind(node.kind)} session.`;
+    return null;
+  }
+  state.lastError = null;
+  state.missionControlRegistry = {
+    ...state.missionControlRegistry,
+    treeNodes: linkMissionControlTreeNodeSession(
+      state.missionControlRegistry.treeNodes ?? [],
+      node.id,
+      created.key,
+    ),
+  };
+  void saveMissionControlRegistry(state);
+  return created.key;
+}
+
+async function ensureProjectTreePrimaryChatSession(
+  state: AppViewState,
+  folderNode: ProjectTreeChildNode,
+  scopedRepoId: string,
+): Promise<string | null> {
+  const projectTree = buildProjectTree(state);
+  const latestFolderMatch = findProjectTreeNodeMatch(projectTree, folderNode.id);
+  const latestFolderNode = latestFolderMatch?.node ?? folderNode;
+  const currentSelectedChild = latestFolderNode.children.find(
+    (child) => child.kind === "chat-module" && child.id === state.selectedProjectGroup,
+  );
+  const primaryChatNode =
+    currentSelectedChild ??
+    latestFolderNode.children.find(
+      (child) =>
+        child.kind === "chat-module" &&
+        normalizeLowercaseStringOrEmpty(child.label) === "main chat",
+    ) ??
+    latestFolderNode.children.find((child) => child.kind === "chat-module") ??
+    null;
+
+  let resolvedChatNode = primaryChatNode;
+  if (!resolvedChatNode) {
+    const nextChatId = `tree:${crypto.randomUUID()}`;
+    state.missionControlRegistry = {
+      ...state.missionControlRegistry,
+      treeNodes: appendMissionControlTreeNode(state.missionControlRegistry.treeNodes ?? [], {
+        id: nextChatId,
+        parentId: folderNode.id,
+        kind: "chat-module",
+        label: "Main Chat",
+      }),
+    };
+    void saveMissionControlRegistry(state);
+    resolvedChatNode = findProjectTreeNodeMatch(buildProjectTree(state), nextChatId)?.node ?? null;
+  }
+  if (!resolvedChatNode) {
+    return null;
+  }
+  if (resolvedChatNode.linkedSessionKey) {
+    return resolvedChatNode.linkedSessionKey;
+  }
+  return createLinkedProjectTreeSession(state, resolvedChatNode, {
+    scopedRepoId,
+  });
+}
+
+async function openProjectTreeNodeSession(
+  state: AppViewState,
+  node: ProjectTreeChildNode,
+  options: {
+    scopedRepoId: string;
+    expandKeys?: string[];
+  },
+) {
+  const nextCollapsed: AppViewState["settings"]["navGroupsCollapsed"] = {
+    ...state.settings.navGroupsCollapsed,
+    project: false,
+  };
+  for (const key of options.expandKeys ?? []) {
+    nextCollapsed[key] = false;
+  }
+  state.applySettings({
+    ...state.settings,
+    selectedProjectRepo: options.scopedRepoId,
+    selectedProjectGroup: node.id,
+    navGroupsCollapsed: nextCollapsed,
+  });
+  state.selectedProjectRepo = options.scopedRepoId;
+  state.selectedProjectGroup = node.id;
+  if (state.tab !== "chat") {
+    state.setTab("chat");
+  }
+  if (node.linkedSessionKey) {
+    switchChatSession(state, node.linkedSessionKey);
+    return;
+  }
+  let createdKey: string | null = null;
+  if (node.kind === "acp-module") {
+    const projectTree = buildProjectTree(state);
+    const match = findProjectTreeNodeMatch(projectTree, node.id);
+    const parentFolder = match?.parent;
+    const parentSessionKey =
+      parentFolder && isProjectTreeFolderNode(parentFolder)
+        ? await ensureProjectTreePrimaryChatSession(state, parentFolder, options.scopedRepoId)
+        : null;
+    const parentMessages = parentSessionKey
+      ? await loadProjectTreeSessionMessages(state, parentSessionKey)
+      : [];
+    createdKey = await createLinkedProjectTreeSession(state, node, {
+      scopedRepoId: options.scopedRepoId,
+      parentSessionKey: parentSessionKey ?? undefined,
+      message: buildProjectTreeAcpHandoffMessage(
+        buildProjectTreeSessionLabel(node),
+        parentSessionKey ?? "not-linked",
+        parentMessages,
+      ),
+    });
+  } else {
+    createdKey = await createLinkedProjectTreeSession(state, node, {
+      scopedRepoId: options.scopedRepoId,
+    });
+  }
+  if (!createdKey) {
+    return;
+  }
+  switchChatSession(state, createdKey);
 }
 
 type DismissedUpdateBanner = {
@@ -394,6 +1062,7 @@ export function renderApp(state: AppViewState) {
   const dreamingNextCycle = resolveDreamingNextCycle(state.dreamingStatus);
   const dreamingLoading = state.dreamingStatusLoading || state.dreamingModeSaving;
   const dreamingRefreshLoading = state.dreamingStatusLoading || state.dreamDiaryLoading;
+  const sidebarNavWidth = resolveSidebarNavWidth(state);
   const refreshDreaming = () => {
     void Promise.all([loadDreamingStatus(state), loadDreamDiary(state)]);
   };
@@ -507,6 +1176,7 @@ export function renderApp(state: AppViewState) {
         : ""} ${navCollapsed ? "shell--nav-collapsed" : ""} ${navDrawerOpen
         ? "shell--nav-drawer-open"
         : ""} ${state.onboarding ? "shell--onboarding" : ""}"
+      style=${`--shell-nav-width: ${sidebarNavWidth}px;`}
     >
       <button
         type="button"
@@ -633,15 +1303,169 @@ export function renderApp(state: AppViewState) {
                                 state.settings.navGroupsCollapsed[collapsedKey] ?? false
                               );
                               const hasChildren = node.children.length > 0;
-                              const isRepo = node.kind === "repo" && node.repo;
+                              const isFolderNode = isProjectTreeFolderNode(node);
+                              const canCreateChildren =
+                                resolveMissionControlChildKinds(node.kind).length > 0;
+                              const canRemoveNode = node.kind !== "workspace";
+                              const hasExpandableContent = hasChildren;
+                              const scopedRepoId =
+                                node.repoContext?.id ??
+                                state.selectedProjectRepo ??
+                                resolveAgentIdFromSessionKey(state.sessionKey) ??
+                                "main";
+                              const isScopedNodeActive =
+                                state.selectedProjectGroup === node.id ||
+                                (node.kind === "repo" &&
+                                  state.selectedProjectRepo === scopedRepoId);
+                              const renderNodeActions = () => html`
+                                <div class="nav-project-row__actions">
+                                  ${canCreateChildren && node.kind === "workspace"
+                                    ? html`
+                                        <button
+                                          type="button"
+                                          class="nav-project-action nav-project-group__add nav-project-action--add-folder"
+                                          title="Add under ${node.label}"
+                                          aria-label="Add under ${node.label}"
+                                          @click=${() =>
+                                            createMissionControlTreeChildNode(state, {
+                                              parentId: node.id,
+                                              parentKind: node.kind,
+                                              parentLabel: node.label,
+                                              requestedKind: "repo",
+                                              expandKeys: [collapsedKey],
+                                            })}
+                                        >
+                                          ${icons.plus}
+                                        </button>
+                                      `
+                                    : nothing}
+                                  ${canCreateChildren && node.kind !== "workspace"
+                                    ? html`
+                                        <button
+                                          type="button"
+                                          class="nav-project-action nav-project-group__add nav-project-action--add-folder"
+                                          title="Add module under ${node.label}"
+                                          aria-label="Add module under ${node.label}"
+                                          @click=${() =>
+                                            createMissionControlTreeChildNode(state, {
+                                              parentId: node.id,
+                                              parentKind: node.kind,
+                                              parentLabel: node.label,
+                                              requestedKind: "module",
+                                              expandKeys: [collapsedKey],
+                                            })}
+                                        >
+                                          ${icons.plus}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          class="nav-project-action nav-project-action--add-chat"
+                                          title="Add chat under ${node.label}"
+                                          aria-label="Add chat under ${node.label}"
+                                          @click=${() =>
+                                            createMissionControlTreeChildNode(state, {
+                                              parentId: node.id,
+                                              parentKind: node.kind,
+                                              parentLabel: node.label,
+                                              requestedKind: "chat-module",
+                                              expandKeys: [collapsedKey],
+                                            })}
+                                        >
+                                          ${icons.messageSquare}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          class="nav-project-action nav-project-action--add-acp"
+                                          title="Add ACP under ${node.label}"
+                                          aria-label="Add ACP under ${node.label}"
+                                          @click=${() =>
+                                            createMissionControlTreeChildNode(state, {
+                                              parentId: node.id,
+                                              parentKind: node.kind,
+                                              parentLabel: node.label,
+                                              requestedKind: "acp-module",
+                                              expandKeys: [collapsedKey],
+                                            })}
+                                        >
+                                          ${icons.link}
+                                        </button>
+                                      `
+                                    : nothing}
+                                  ${canRemoveNode
+                                    ? html`
+                                        <button
+                                          type="button"
+                                          class="nav-project-action nav-project-action--remove nav-project-group__remove"
+                                          title="Remove ${node.label}"
+                                          aria-label="Remove ${node.label}"
+                                          @click=${() => removeMissionControlTreeNode(state, node)}
+                                        >
+                                          -
+                                        </button>
+                                      `
+                                    : nothing}
+                                </div>
+                              `;
+                              const renderSessionLeaf = (
+                                targetNode: ProjectTreeChildNode,
+                                leafDepth: number,
+                              ) => {
+                                const isLeafActive = state.selectedProjectGroup === targetNode.id;
+                                const leafTitle =
+                                  targetNode.linkedSessionKey ??
+                                  targetNode.repoContext?.title ??
+                                  buildProjectTreeSessionLabel(targetNode);
+                                return html`
+                                  <div
+                                    class="nav-project-group nav-project-group--depth-${leafDepth}"
+                                  >
+                                    <div class="nav-project-row-shell">
+                                      <button
+                                        type="button"
+                                        class="nav-project-row nav-project-row--leaf ${isLeafActive
+                                          ? "nav-project-row--active"
+                                          : ""}"
+                                        title=${leafTitle}
+                                        @click=${() =>
+                                          openProjectTreeNodeSession(state, targetNode, {
+                                            scopedRepoId,
+                                          })}
+                                      >
+                                        <span
+                                          class="nav-project-row__caret nav-project-row__caret--placeholder"
+                                          aria-hidden="true"
+                                        ></span>
+                                        <span class="nav-project-row__icon" aria-hidden="true"
+                                          >${resolveProjectTreeSessionLeafIcon(targetNode)}</span
+                                        >
+                                        <span class="nav-project-group__text"
+                                          >${resolveProjectTreeSessionLeafLabel(targetNode)}</span
+                                        >
+                                      </button>
+                                      ${renderNodeActions()}
+                                    </div>
+                                  </div>
+                                `;
+                              };
+
+                              if (!isFolderNode) {
+                                return renderSessionLeaf(node, depth);
+                              }
+
                               return html`
                                 <div class="nav-project-group nav-project-group--depth-${depth}">
-                                  <div class="nav-project-group__row">
+                                  <div class="nav-project-row-shell">
                                     <button
                                       type="button"
-                                      class="nav-project-group__label"
+                                      class="nav-project-row nav-project-row--folder ${isScopedNodeActive
+                                        ? "nav-project-row--active"
+                                        : ""}"
                                       aria-expanded=${expanded}
+                                      title=${node.label}
                                       @click=${() => {
+                                        if (!hasExpandableContent) {
+                                          return;
+                                        }
                                         state.applySettings({
                                           ...state.settings,
                                           navGroupsCollapsed: {
@@ -651,99 +1475,25 @@ export function renderApp(state: AppViewState) {
                                         });
                                       }}
                                     >
-                                      <span class="nav-project-group__icon" aria-hidden="true"
-                                        >${hasChildren ? icons.chevronDown : icons.folder}</span
+                                      <span class="nav-project-row__caret" aria-hidden="true"
+                                        >${hasExpandableContent
+                                          ? expanded
+                                            ? icons.chevronDown
+                                            : icons.chevronRight
+                                          : nothing}</span
+                                      >
+                                      <span class="nav-project-row__icon" aria-hidden="true"
+                                        >${icons.folder}</span
                                       >
                                       <span class="nav-project-group__text">${node.label}</span>
                                     </button>
-                                    <button
-                                      type="button"
-                                      class="nav-project-group__add"
-                                      title="Add child"
-                                      @click=${() => {
-                                        const label = window
-                                          .prompt(
-                                            `Name new ${node.kind === "workspace" ? "repo/module" : node.kind === "repo" ? "chat sub-module" : node.kind === "module" ? "ACP module" : "child"} under ${node.label}`,
-                                          )
-                                          ?.trim();
-                                        if (!label) {
-                                          return;
-                                        }
-                                        const nextKind: MissionControlTreeNodeKind =
-                                          node.kind === "workspace"
-                                            ? "repo"
-                                            : node.kind === "repo"
-                                              ? "module"
-                                              : node.kind === "module"
-                                                ? "chat-module"
-                                                : "acp-module";
-                                        const nextNode = {
-                                          id: `tree:${crypto.randomUUID()}`,
-                                          parentId: node.id,
-                                          kind: nextKind,
-                                          label,
-                                        };
-                                        state.missionControlRegistry = {
-                                          ...state.missionControlRegistry,
-                                          treeNodes: [
-                                            ...(state.missionControlRegistry.treeNodes ?? []),
-                                            nextNode,
-                                          ],
-                                        };
-                                        state.applySettings({
-                                          ...state.settings,
-                                          navGroupsCollapsed: {
-                                            ...state.settings.navGroupsCollapsed,
-                                            [collapsedKey]: false,
-                                            project: false,
-                                          },
-                                        });
-                                      }}
-                                    >
-                                      +
-                                    </button>
+                                    ${renderNodeActions()}
                                   </div>
-                                  ${isRepo && node.repo
-                                    ? html`
-                                        <button
-                                          type="button"
-                                          class="nav-project-item ${state.selectedProjectRepo ===
-                                          node.repo.id
-                                            ? "nav-project-item--active"
-                                            : ""}"
-                                          title=${node.repo.title}
-                                          @click=${() => {
-                                            state.applySettings({
-                                              ...state.settings,
-                                              selectedProjectRepo: node.repo!.id,
-                                              selectedProjectGroup: state.selectedProjectGroup,
-                                              navGroupsCollapsed: {
-                                                ...state.settings.navGroupsCollapsed,
-                                                [collapsedKey]: false,
-                                                project: false,
-                                              },
-                                            });
-                                            state.selectedProjectRepo = node.repo!.id;
-                                            if (state.tab !== "chat") {
-                                              state.setTab("chat");
-                                            }
-                                            switchChatSession(state, node.repo!.sessionKey);
-                                          }}
-                                        >
-                                          <span class="nav-project-item__icon" aria-hidden="true"
-                                            >${icons.folder}</span
-                                          >
-                                          <span class="nav-project-item__text"
-                                            >Open ${node.repo.label}</span
-                                          >
-                                        </button>
-                                      `
-                                    : nothing}
-                                  ${hasChildren
+                                  ${hasExpandableContent
                                     ? html`<div
-                                        class="nav-project-group__repos ${expanded
+                                        class="nav-project-group__children ${expanded
                                           ? ""
-                                          : "nav-project-group__repos--collapsed"}"
+                                          : "nav-project-group__children--collapsed"}"
                                       >
                                         ${node.children.map((child) =>
                                           renderTreeNode(child, depth + 1),
@@ -755,39 +1505,67 @@ export function renderApp(state: AppViewState) {
                             };
                             return html`
                               <div class="nav-project-node">
-                                <button
-                                  type="button"
-                                  class="nav-item nav-item--tree"
-                                  aria-expanded=${projectExpanded}
-                                  @click=${() => {
-                                    const isCollapsed =
-                                      state.settings.navGroupsCollapsed.project ?? true;
-                                    state.applySettings({
-                                      ...state.settings,
-                                      navGroupsCollapsed: {
-                                        ...state.settings.navGroupsCollapsed,
-                                        project: !isCollapsed,
-                                      },
-                                    });
-                                  }}
-                                >
-                                  <span class="nav-item__icon" aria-hidden="true"
-                                    >${icons.folder}</span
+                                <div class="nav-project-node__row">
+                                  <button
+                                    type="button"
+                                    class="nav-project-row nav-project-row--folder nav-project-row--root"
+                                    aria-expanded=${projectExpanded}
+                                    @click=${() => {
+                                      const isCollapsed =
+                                        state.settings.navGroupsCollapsed.project ?? true;
+                                      state.applySettings({
+                                        ...state.settings,
+                                        navGroupsCollapsed: {
+                                          ...state.settings.navGroupsCollapsed,
+                                          project: !isCollapsed,
+                                        },
+                                      });
+                                    }}
                                   >
-                                  <span class="nav-item__text">${titleForTab(tab)}</span>
-                                  <span class="nav-item__tree-chevron" aria-hidden="true"
-                                    >${icons.chevronDown}</span
-                                  >
-                                </button>
-                                <div
-                                  class="nav-project-tree ${projectExpanded
-                                    ? ""
-                                    : "nav-project-tree--collapsed"}"
-                                >
-                                  <div class="nav-project-list">
-                                    ${projectTree.map((treeNode) => renderTreeNode(treeNode))}
+                                    <span class="nav-project-row__caret" aria-hidden="true"
+                                      >${projectExpanded
+                                        ? icons.chevronDown
+                                        : icons.chevronRight}</span
+                                    >
+                                    <span class="nav-project-row__icon" aria-hidden="true"
+                                      >${icons.folder}</span
+                                    >
+                                    <span class="nav-project-group__text">${titleForTab(tab)}</span>
+                                  </button>
+                                  <div class="nav-project-row__actions">
+                                    <button
+                                      type="button"
+                                      class="nav-project-action nav-project-group__add nav-project-action--add-folder"
+                                      title="Add project root"
+                                      aria-label="Add project root"
+                                      @click=${() => {
+                                        const ensuredWorkspace = ensureMissionControlWorkspaceNode(
+                                          state.missionControlRegistry,
+                                          state.missionControlRegistry.treeNodes ?? [],
+                                        );
+                                        createMissionControlTreeChildNode(state, {
+                                          treeNodes: ensuredWorkspace.treeNodes,
+                                          parentId: ensuredWorkspace.workspaceNode.id,
+                                          parentKind: ensuredWorkspace.workspaceNode.kind,
+                                          parentLabel: titleForTab(tab),
+                                          requestedKind: "repo",
+                                          expandKeys: [`tree:${ensuredWorkspace.workspaceNode.id}`],
+                                        });
+                                      }}
+                                    >
+                                      ${icons.plus}
+                                    </button>
                                   </div>
                                 </div>
+                                ${projectExpanded
+                                  ? html`
+                                      <div class="nav-project-tree">
+                                        <div class="nav-project-list">
+                                          ${projectTree.map((treeNode) => renderTreeNode(treeNode))}
+                                        </div>
+                                      </div>
+                                    `
+                                  : nothing}
                               </div>
                             `;
                           }
@@ -837,6 +1615,20 @@ export function renderApp(state: AppViewState) {
             </div>
           </div>
         </aside>
+        ${!navCollapsed
+          ? html`
+              <div
+                class="sidebar-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="${t("nav.resize")}"
+                title="${t("nav.resize")}"
+                tabindex="0"
+                @mousedown=${(event: MouseEvent) => startSidebarResize(state, event)}
+                @keydown=${(event: KeyboardEvent) => handleSidebarResizeKeydown(state, event)}
+              ></div>
+            `
+          : nothing}
       </div>
       <main class="content ${isChat ? "content--chat" : ""}">
         ${state.updateAvailable &&
@@ -1894,7 +2686,6 @@ export function renderApp(state: AppViewState) {
               onNewSession: async () => {
                 const created = await createSession(state, {
                   agentId: resolvedAgentId ?? "main",
-                  reuseExisting: true,
                 });
                 if (!created?.key) {
                   state.lastError = state.sessionsError ?? "Failed to create a new session.";
