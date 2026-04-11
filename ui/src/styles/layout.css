@@ -639,17 +639,42 @@
 }
 
 .nav-project-tree {
-  overflow: hidden;
+  min-height: 0;
+  max-height: min(50vh, 420px);
+  overflow-y: auto;
+  overflow-x: hidden;
   transition: max-height 180ms ease, opacity 180ms ease, margin 180ms ease;
-  max-height: 1200px;
   opacity: 1;
   margin-top: 0;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--border-strong) 72%, transparent) transparent;
+  overscroll-behavior: contain;
 }
 
 .nav-project-tree--collapsed {
   max-height: 0;
   opacity: 0;
   margin-top: 0;
+  overflow: hidden;
+  padding-right: 0;
+}
+
+.nav-project-tree::-webkit-scrollbar {
+  width: 8px;
+}
+
+.nav-project-tree::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.nav-project-tree::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 999px;
+}
+
+.nav-project-tree::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text) 36%, transparent);
 }
 
 .nav-project-list {
@@ -657,7 +682,7 @@
   flex-direction: column;
   gap: 2px;
   margin: 0;
-  padding: 0;
+  padding: 0 0 6px;
 }
 
 .nav-project-group {
