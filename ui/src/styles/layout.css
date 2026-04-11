@@ -630,8 +630,9 @@
 .nav-project-node {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 4px;
+  gap: 6px;
   min-height: 0;
+  margin-bottom: 8px;
 }
 
 .nav-project-node__row {
@@ -645,14 +646,16 @@
 .nav-project-tree {
   min-height: 0;
   height: 100%;
-  max-height: clamp(220px, 42vh, 420px);
+  max-height: 260px;
   overflow-y: auto;
   overflow-x: hidden;
   transition: max-height 180ms ease, opacity 180ms ease, margin 180ms ease;
   opacity: 1;
   margin-top: 0;
-  padding-right: 4px;
+  margin-bottom: 6px;
+  padding: 4px 4px 10px 0;
   border-radius: 10px;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--border-strong) 72%, transparent) transparent;
   overscroll-behavior: contain;
