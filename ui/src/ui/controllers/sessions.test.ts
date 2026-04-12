@@ -207,6 +207,34 @@ describe("createSession", () => {
     expect(created).toEqual({ key: "agent:main:dashboard:test-123" });
     expect(request).not.toHaveBeenCalledWith("sessions.create", expect.anything());
   });
+
+  it("passes parent session context through when creating a linked worker session", async () => {
+    const request = vi.fn(async (method: string, params?: unknown) => {
+      if (method === "sessions.create") {
+        expect(params).toEqual({
+          agentId: "main",
+          label: "Salesforce / SMS / SMS Leak / Patch",
+          parentSessionKey: "agent:main:dashboard:main-chat",
+          message: "handoff summary",
+        });
+        return { ok: true, key: "agent:main:dashboard:acp-patch" };
+      }
+      if (method === "sessions.list") {
+        return undefined;
+      }
+      throw new Error(`unexpected method: ${method}`);
+    });
+    const state = createState(request);
+
+    const created = await createSession(state, {
+      agentId: "main",
+      label: "Salesforce / SMS / SMS Leak / Patch",
+      parentSessionKey: "agent:main:dashboard:main-chat",
+      message: "handoff summary",
+    });
+
+    expect(created).toEqual({ key: "agent:main:dashboard:acp-patch" });
+  });
 });
 
 describe("loadSessions", () => {

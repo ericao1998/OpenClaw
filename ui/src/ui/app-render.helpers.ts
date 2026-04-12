@@ -934,11 +934,14 @@ type ProjectRepoGroup = {
   repos: ProjectRepoOption[];
 };
 
-type ProjectTreeChildNode = {
+export type ProjectTreeChildNode = {
   id: string;
   label: string;
   kind: MissionControlTreeNode["kind"];
   repo?: ProjectRepoOption;
+  repoContext?: ProjectRepoOption;
+  linkedSessionKey?: string;
+  pathLabels: string[];
   children: ProjectTreeChildNode[];
 };
 
@@ -1199,28 +1202,57 @@ export function resolveProjectRepoGroups(state: AppViewState): ProjectRepoGroup[
 
 export function buildProjectTree(state: AppViewState): ProjectTreeChildNode[] {
   const registryNodes = state.missionControlRegistry.treeNodes ?? [];
-  const repoByDomainId = new Map(
-    resolveProjectRepoOptions(state)
-      .filter((repo) => repo.id)
-      .map((repo) => [repo.id, repo] as const),
-  );
+  const repoOptions = resolveProjectRepoOptions(state).filter((repo) => repo.id);
+  const repoById = new Map(repoOptions.map((repo) => [repo.id, repo] as const));
+  const repoByLinkId = new Map<string, ProjectRepoOption>();
+  for (const repo of repoOptions) {
+    repoByLinkId.set(repo.id, repo);
+  }
+  for (const domain of PPV_WORKSPACE_REGISTRY.domains) {
+    const linkedRepo =
+      repoById.get(normalizeLowercaseStringOrEmpty(domain.repo)) ??
+      repoById.get(normalizeLowercaseStringOrEmpty(domain.id));
+    if (!linkedRepo) {
+      continue;
+    }
+    repoByLinkId.set(normalizeLowercaseStringOrEmpty(domain.id), linkedRepo);
+    repoByLinkId.set(normalizeLowercaseStringOrEmpty(domain.repo), linkedRepo);
+    repoByLinkId.set(normalizeLowercaseStringOrEmpty(domain.name), linkedRepo);
+  }
   const childrenByParent = new Map<string | null, MissionControlTreeNode[]>();
   for (const node of registryNodes) {
     const bucket = childrenByParent.get(node.parentId ?? null) ?? [];
     bucket.push(node);
     childrenByParent.set(node.parentId ?? null, bucket);
   }
-  const buildNode = (node: MissionControlTreeNode): ProjectTreeChildNode => ({
-    id: node.id,
-    label: node.label,
-    kind: node.kind,
-    repo:
+  const buildNode = (
+    node: MissionControlTreeNode,
+    parentRepoContext?: ProjectRepoOption,
+    pathLabels: string[] = [],
+  ): ProjectTreeChildNode => {
+    const repo =
       node.kind === "repo"
-        ? repoByDomainId.get(normalizeLowercaseStringOrEmpty(node.linkedDomainId))
-        : undefined,
-    children: (childrenByParent.get(node.id) ?? []).map(buildNode),
-  });
-  return (childrenByParent.get(null) ?? []).map(buildNode);
+        ? repoByLinkId.get(
+            normalizeLowercaseStringOrEmpty(node.linkedDomainId) ||
+              normalizeLowercaseStringOrEmpty(node.label),
+          )
+        : undefined;
+    const repoContext = repo ?? parentRepoContext;
+    const nextPathLabels = [...pathLabels, node.label];
+    return {
+      id: node.id,
+      label: node.label,
+      kind: node.kind,
+      repo,
+      repoContext,
+      linkedSessionKey: normalizeOptionalString(node.linkedSessionKey),
+      pathLabels: nextPathLabels,
+      children: (childrenByParent.get(node.id) ?? []).map((child) =>
+        buildNode(child, repoContext, nextPathLabels),
+      ),
+    };
+  };
+  return (childrenByParent.get(null) ?? []).map((node) => buildNode(node));
 }
 
 function resolveRepoSessionRootKeys(state: AppViewState, repoId: string): Set<string> {

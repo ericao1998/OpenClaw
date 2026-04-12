@@ -22,6 +22,35 @@ function createState(
 }
 
 describe("mission control store", () => {
+  it("builds default project tree nodes for a fresh registry", () => {
+    const registry = createDefaultMissionControlRegistry();
+
+    expect(registry.treeNodes?.[0]).toMatchObject({
+      id: "workspace:ppv",
+      kind: "workspace",
+      parentId: null,
+    });
+    expect(
+      registry.treeNodes?.some((node) => node.kind === "repo" && node.parentId === "workspace:ppv"),
+    ).toBe(true);
+    expect(
+      registry.treeNodes?.some(
+        (node) =>
+          node.kind === "module" &&
+          node.parentId === "repo:control" &&
+          node.label === "Mission Control UI",
+      ),
+    ).toBe(true);
+    expect(
+      registry.treeNodes?.some(
+        (node) =>
+          node.kind === "module" &&
+          node.label === "Project Tree" &&
+          String(node.parentId).includes("mission-control-ui"),
+      ),
+    ).toBe(true);
+  });
+
   it("loads registry overrides from the gateway and merges them onto the default registry", async () => {
     const request = vi.fn(async (method: string) => {
       expect(method).toBe("missionControl.get");
@@ -60,6 +89,148 @@ describe("mission control store", () => {
       starterPrompt: "Mission Control intake: take the Salesforce lane first.",
     });
     expect(state.lastError).toBeNull();
+  });
+
+  it("migrates legacy folder-linked sessions into explicit chat leaves", async () => {
+    const request = vi.fn(async () => ({
+      registry: {
+        treeNodes: [
+          {
+            id: "workspace:ppv",
+            parentId: null,
+            kind: "workspace",
+            label: "Prime Property Ventures Workspace",
+          },
+          {
+            id: "repo:control",
+            parentId: "workspace:ppv",
+            kind: "repo",
+            label: "Control",
+            linkedDomainId: "control",
+            linkedSessionKey: "agent:openclaw:dashboard:control",
+          },
+          {
+            id: "module:operator-os",
+            parentId: "repo:control",
+            kind: "module",
+            label: "Operator OS",
+            linkedSessionKey: "agent:openclaw:dashboard:operator-os",
+          },
+        ],
+      },
+    }));
+    const state = createState(request);
+
+    await loadMissionControlRegistry(state);
+
+    const repoNode = state.missionControlRegistry.treeNodes?.find(
+      (node) => node.id === "repo:control",
+    );
+    const moduleNode = state.missionControlRegistry.treeNodes?.find(
+      (node) => node.id === "module:operator-os",
+    );
+    expect(repoNode?.linkedSessionKey).toBeUndefined();
+    expect(moduleNode?.linkedSessionKey).toBeUndefined();
+    expect(state.missionControlRegistry.treeNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentId: "repo:control",
+          kind: "chat-module",
+          label: "Project Chat",
+          linkedSessionKey: "agent:openclaw:dashboard:control",
+        }),
+        expect.objectContaining({
+          parentId: "module:operator-os",
+          kind: "chat-module",
+          label: "Chat",
+          linkedSessionKey: "agent:openclaw:dashboard:operator-os",
+        }),
+      ]),
+    );
+  });
+
+  it("does not duplicate migrated chat leaves when the leaf already exists", async () => {
+    const request = vi.fn(async () => ({
+      registry: {
+        treeNodes: [
+          {
+            id: "workspace:ppv",
+            parentId: null,
+            kind: "workspace",
+            label: "Prime Property Ventures Workspace",
+          },
+          {
+            id: "repo:control",
+            parentId: "workspace:ppv",
+            kind: "repo",
+            label: "Control",
+            linkedSessionKey: "agent:openclaw:dashboard:control",
+          },
+          {
+            id: "repo:control:chat",
+            parentId: "repo:control",
+            kind: "chat-module",
+            label: "Project Chat",
+            linkedSessionKey: "agent:openclaw:dashboard:control",
+          },
+        ],
+      },
+    }));
+    const state = createState(request);
+
+    await loadMissionControlRegistry(state);
+
+    expect(
+      state.missionControlRegistry.treeNodes?.filter(
+        (node) =>
+          node.parentId === "repo:control" &&
+          node.kind === "chat-module" &&
+          node.linkedSessionKey === "agent:openclaw:dashboard:control",
+      ),
+    ).toHaveLength(1);
+    const repoNode = state.missionControlRegistry.treeNodes?.find(
+      (node) => node.id === "repo:control",
+    );
+    expect(repoNode).not.toHaveProperty("linkedSessionKey");
+  });
+
+  it("seeds curated repo modules when a persisted tree only has repo roots", async () => {
+    const request = vi.fn(async () => ({
+      registry: {
+        treeNodes: [
+          {
+            id: "workspace:ppv",
+            parentId: null,
+            kind: "workspace",
+            label: "Prime Property Ventures Workspace",
+          },
+          {
+            id: "repo:control",
+            parentId: "workspace:ppv",
+            kind: "repo",
+            label: "Control",
+            linkedDomainId: "control",
+          },
+        ],
+      },
+    }));
+    const state = createState(request);
+
+    await loadMissionControlRegistry(state);
+
+    expect(state.missionControlRegistry.treeNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentId: "repo:control",
+          kind: "module",
+          label: "Mission Control UI",
+        }),
+        expect.objectContaining({
+          kind: "module",
+          label: "Project Tree",
+        }),
+      ]),
+    );
   });
 
   it("does nothing when the client is disconnected", async () => {

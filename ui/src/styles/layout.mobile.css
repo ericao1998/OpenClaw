@@ -51,6 +51,10 @@
     pointer-events: auto;
   }
 
+  .sidebar-resizer {
+    display: none;
+  }
+
   .shell-nav-backdrop {
     display: block;
     position: fixed;

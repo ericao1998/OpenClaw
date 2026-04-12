@@ -13,7 +13,10 @@ type TelegramAccountStatus = {
   accountId?: unknown;
   enabled?: unknown;
   configured?: unknown;
+  groupPolicy?: unknown;
+  groupsConfigured?: unknown;
   allowUnmentionedGroups?: unknown;
+  canReadAllGroupMessages?: unknown;
   audit?: unknown;
 };
 
@@ -38,7 +41,10 @@ function readTelegramAccountStatus(value: ChannelAccountSnapshot): TelegramAccou
     accountId: value.accountId,
     enabled: value.enabled,
     configured: value.configured,
+    groupPolicy: (value as Record<string, unknown>).groupPolicy,
+    groupsConfigured: (value as Record<string, unknown>).groupsConfigured,
     allowUnmentionedGroups: value.allowUnmentionedGroups,
+    canReadAllGroupMessages: (value as Record<string, unknown>).canReadAllGroupMessages,
     audit: value.audit,
   };
 }
@@ -101,6 +107,21 @@ export function collectTelegramStatusIssues(
         kind: "config",
         message:
           "Config allows unmentioned group messages (requireMention=false). Telegram Bot API privacy mode will block most group messages unless disabled.",
+        fix: "In BotFather run /setprivacy → Disable for this bot (then restart the gateway).",
+      });
+    }
+
+    if (
+      account.groupsConfigured === true &&
+      account.canReadAllGroupMessages === false &&
+      account.allowUnmentionedGroups !== true
+    ) {
+      issues.push({
+        channel: "telegram",
+        accountId,
+        kind: "config",
+        message:
+          "Telegram privacy mode is enabled (can_read_all_group_messages=false). Fresh group @mentions will not reach the bot, so mention-gated groups can look silent until you reply to a bot message or disable privacy.",
         fix: "In BotFather run /setprivacy → Disable for this bot (then restart the gateway).",
       });
     }

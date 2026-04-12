@@ -48,6 +48,7 @@ import {
 } from "./directory-config.js";
 import { buildTelegramExecApprovalPendingPayload } from "./exec-approval-forwarding.js";
 import { shouldSuppressLocalTelegramExecApprovalPrompt } from "./exec-approvals.js";
+import { resolveTelegramRuntimeGroupPolicy } from "./group-access.js";
 import {
   resolveTelegramGroupRequireMention,
   resolveTelegramGroupToolPolicy,
@@ -824,7 +825,7 @@ export const telegramPlugin = createChatChannelPlugin({
         });
         return { ...audit, unresolvedGroups, hasWildcardUnmentionedGroups };
       },
-      resolveAccountSnapshot: ({ account, cfg, runtime, audit }) => {
+      resolveAccountSnapshot: ({ account, cfg, runtime, audit, probe }) => {
         const configuredFromStatus = resolveConfiguredFromCredentialStatuses(account);
         const ownerAccountId = findTelegramTokenOwnerAccountId({
           cfg,
@@ -841,6 +842,12 @@ export const telegramPlugin = createChatChannelPlugin({
         const groups =
           cfg.channels?.telegram?.accounts?.[account.accountId]?.groups ??
           cfg.channels?.telegram?.groups;
+        const groupPolicy = resolveTelegramRuntimeGroupPolicy({
+          providerConfigPresent: cfg.channels?.telegram !== undefined,
+          groupPolicy: account.config.groupPolicy,
+          defaultGroupPolicy: cfg.channels?.defaults?.groupPolicy,
+        }).groupPolicy;
+        const groupsConfigured = Object.keys(groups ?? {}).length > 0;
         const allowUnmentionedGroups =
           groups?.["*"]?.requireMention === false ||
           Object.entries(groups ?? {}).some(
@@ -856,7 +863,10 @@ export const telegramPlugin = createChatChannelPlugin({
             lastError: runtime?.lastError ?? duplicateTokenReason,
             mode: runtime?.mode ?? (account.config.webhookUrl ? "webhook" : "polling"),
             audit,
+            groupPolicy,
+            groupsConfigured,
             allowUnmentionedGroups,
+            canReadAllGroupMessages: probe?.ok ? probe.bot?.canReadAllGroupMessages : undefined,
           },
         };
       },

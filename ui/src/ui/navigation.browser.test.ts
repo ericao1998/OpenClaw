@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import "../test-helpers/load-styles.ts";
 import { mountApp as mountTestApp, registerAppMountHooks } from "./test-helpers/app-mount.ts";
 
@@ -11,6 +11,42 @@ function mountApp(pathname: string) {
 function nextFrame() {
   return new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve());
+  });
+}
+
+function setViewport(width: number, height = 900) {
+  const matchMedia = vi.fn((query: string) => {
+    const maxWidthMatch = query.match(/\(max-width:\s*(\d+)px\)/);
+    const minWidthMatch = query.match(/\(min-width:\s*(\d+)px\)/);
+    const matches =
+      (maxWidthMatch ? width <= Number.parseInt(maxWidthMatch[1] ?? "0", 10) : true) &&
+      (minWidthMatch ? width >= Number.parseInt(minWidthMatch[1] ?? "0", 10) : true);
+    return {
+      matches,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+  });
+  vi.stubGlobal("matchMedia", matchMedia);
+  Object.defineProperty(window, "matchMedia", {
+    value: matchMedia,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(window, "innerWidth", {
+    value: width,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(window, "innerHeight", {
+    value: height,
+    writable: true,
+    configurable: true,
   });
 }
 
@@ -181,16 +217,431 @@ describe("control UI routing", () => {
     expect(app.querySelector(".sidebar-brand__copy")).not.toBeNull();
   });
 
-  it("does not render a desktop sidebar resizer or inject a custom nav width", async () => {
+  it("renders a desktop sidebar resizer and applies custom nav width", async () => {
+    setViewport(1440, 900);
     const app = mountApp("/chat");
     await app.updateComplete;
 
     app.applySettings({ ...app.settings, navWidth: 360 });
     await app.updateComplete;
 
-    expect(app.querySelector(".sidebar-resizer")).toBeNull();
+    expect(app.querySelector(".sidebar-resizer")).not.toBeNull();
     const shell = app.querySelector<HTMLElement>(".shell");
-    expect(shell?.style.getPropertyValue("--shell-nav-width")).toBe("");
+    expect(shell?.style.getPropertyValue("--shell-nav-width")).toBe("360px");
+  });
+
+  it("updates sidebar width from desktop drag gestures", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    await app.updateComplete;
+
+    const resizer = app.querySelector<HTMLElement>(".sidebar-resizer");
+    expect(resizer).not.toBeNull();
+    resizer?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: 220, button: 0 }));
+    document.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 300 }));
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    await app.updateComplete;
+
+    expect(app.settings.navWidth).toBe(300);
+    const shell = app.querySelector<HTMLElement>(".shell");
+    expect(shell?.style.getPropertyValue("--shell-nav-width")).toBe("300px");
+  });
+
+  it("keeps project folders structural until an explicit chat leaf is created", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    app.missionControlRegistry = {
+      id: "ppv",
+      name: "Prime Property Ventures",
+      domains: [],
+      sessionLanes: [],
+      intakeRoutes: [],
+      treeNodes: [
+        {
+          id: "workspace:ppv",
+          parentId: null,
+          kind: "workspace",
+          label: "Prime Property Ventures Workspace",
+        },
+        {
+          id: "repo:ppv",
+          parentId: "workspace:ppv",
+          kind: "repo",
+          label: "PPV",
+        },
+        {
+          id: "module:operator-os",
+          parentId: "repo:ppv",
+          kind: "module",
+          label: "Operator OS",
+        },
+      ],
+    };
+    app.applySettings({
+      ...app.settings,
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:ppv": false,
+        "tree:module:operator-os": false,
+      },
+    });
+    await app.updateComplete;
+
+    expect(app.querySelectorAll(".nav-project-row--leaf")).toHaveLength(0);
+    expect(
+      Array.from(app.querySelectorAll(".nav-project-group__text")).some(
+        (el) => el.textContent?.trim() === "Project Chat",
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the curated default project hierarchy from a fresh app state", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    app.applySettings({
+      ...app.settings,
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:control": false,
+      },
+    });
+    await app.updateComplete;
+
+    expect(
+      Array.from(app.querySelectorAll(".nav-project-group__text")).some(
+        (el) => el.textContent?.trim() === "Mission Control UI",
+      ),
+    ).toBe(true);
+  });
+
+  it("treats plain child names as modules in the project tree add flow", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    app.missionControlRegistry = {
+      id: "ppv",
+      name: "Prime Property Ventures",
+      domains: [],
+      sessionLanes: [],
+      intakeRoutes: [],
+      treeNodes: [
+        {
+          id: "workspace:ppv",
+          parentId: null,
+          kind: "workspace",
+          label: "Prime Property Ventures Workspace",
+        },
+        {
+          id: "repo:ppv",
+          parentId: "workspace:ppv",
+          kind: "repo",
+          label: "PPV",
+        },
+      ],
+    };
+    app.applySettings({
+      ...app.settings,
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:ppv": false,
+      },
+    });
+    await app.updateComplete;
+
+    vi.spyOn(window, "prompt").mockReturnValueOnce("Operator OS");
+
+    const repoGroup = Array.from(app.querySelectorAll<HTMLElement>(".nav-project-group")).find(
+      (el) => el.querySelector(".nav-project-group__text")?.textContent?.trim() === "PPV",
+    );
+    const addButton = repoGroup?.querySelector<HTMLButtonElement>(".nav-project-group__add");
+    expect(addButton).not.toBeNull();
+    addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await app.updateComplete;
+
+    expect(app.lastError).toBeNull();
+    expect(app.missionControlRegistry.treeNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentId: "repo:ppv",
+          kind: "module",
+          label: "Operator OS",
+        }),
+      ]),
+    );
+  });
+
+  it("adds chat nodes directly under project folders", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    app.missionControlRegistry = {
+      id: "ppv",
+      name: "Prime Property Ventures",
+      domains: [],
+      sessionLanes: [],
+      intakeRoutes: [],
+      treeNodes: [
+        {
+          id: "workspace:ppv",
+          parentId: null,
+          kind: "workspace",
+          label: "Prime Property Ventures Workspace",
+        },
+        {
+          id: "repo:ppv",
+          parentId: "workspace:ppv",
+          kind: "repo",
+          label: "PPV",
+        },
+        {
+          id: "module:operator-os",
+          parentId: "repo:ppv",
+          kind: "module",
+          label: "Operator OS",
+        },
+      ],
+    };
+    app.applySettings({
+      ...app.settings,
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:ppv": false,
+        "tree:module:operator-os": false,
+      },
+    });
+    await app.updateComplete;
+
+    vi.spyOn(window, "prompt").mockReturnValueOnce("Discovery");
+
+    const moduleGroup = Array.from(app.querySelectorAll<HTMLElement>(".nav-project-group")).find(
+      (el) => el.querySelector(".nav-project-group__text")?.textContent?.trim() === "Operator OS",
+    );
+    const addButton = moduleGroup?.querySelector<HTMLButtonElement>(
+      ".nav-project-action--add-chat",
+    );
+    expect(addButton).not.toBeNull();
+    addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await app.updateComplete;
+
+    expect(app.lastError).toBeNull();
+    expect(app.missionControlRegistry.treeNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          parentId: "module:operator-os",
+          kind: "chat-module",
+          label: "Discovery",
+        }),
+      ]),
+    );
+    expect(
+      Array.from(app.querySelectorAll(".nav-project-group__text")).some(
+        (el) => el.textContent?.trim() === "Discovery",
+      ),
+    ).toBe(true);
+  });
+
+  it("spawns ACP sessions from the folder's main chat context", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "sessions.create") {
+        expect(params).toMatchObject({
+          agentId: "prime-salesforce-dev",
+          parentSessionKey: "agent:main:dashboard:main-chat",
+        });
+        expect(String(params?.message ?? "")).toContain("Investigate the SMS leak");
+        return { ok: true, key: "agent:main:dashboard:acp-patch" };
+      }
+      if (method === "sessions.list") {
+        return {
+          ts: 1,
+          path: "",
+          count: 2,
+          defaults: { modelProvider: null, model: null, contextTokens: null },
+          sessions: [
+            {
+              key: "agent:main:dashboard:main-chat",
+              kind: "direct",
+              updatedAt: 20,
+            },
+            {
+              key: "agent:main:dashboard:acp-patch",
+              kind: "direct",
+              updatedAt: 10,
+              spawnedBy: "agent:main:dashboard:main-chat",
+            },
+          ],
+        };
+      }
+      if (method === "chat.history") {
+        return { messages: [], thinkingLevel: null };
+      }
+      return {};
+    });
+    app.client = { request, stop: vi.fn() } as never;
+    app.connected = true;
+    app.sessionKey = "agent:main:dashboard:main-chat";
+    app.chatMessages = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Investigate the SMS leak in Twilio sync." }],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "We should isolate the leak, patch it, and validate the fix." },
+        ],
+      },
+    ];
+    app.missionControlRegistry = {
+      id: "ppv",
+      name: "Prime Property Ventures",
+      domains: [],
+      sessionLanes: [],
+      intakeRoutes: [],
+      treeNodes: [
+        {
+          id: "workspace:ppv",
+          parentId: null,
+          kind: "workspace",
+          label: "Prime Property Ventures Workspace",
+        },
+        {
+          id: "repo:salesforce",
+          parentId: "workspace:ppv",
+          kind: "repo",
+          label: "Salesforce",
+          linkedDomainId: "salesforce",
+        },
+        {
+          id: "module:sms",
+          parentId: "repo:salesforce",
+          kind: "module",
+          label: "SMS",
+        },
+        {
+          id: "module:sms-leak",
+          parentId: "module:sms",
+          kind: "module",
+          label: "SMS Leak",
+        },
+        {
+          id: "chat:main",
+          parentId: "module:sms-leak",
+          kind: "chat-module",
+          label: "Main Chat",
+          linkedSessionKey: "agent:main:dashboard:main-chat",
+        },
+        {
+          id: "acp:patch",
+          parentId: "module:sms-leak",
+          kind: "acp-module",
+          label: "Patch Worker",
+        },
+      ],
+    };
+    app.applySettings({
+      ...app.settings,
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:salesforce": false,
+        "tree:module:sms": false,
+        "tree:module:sms-leak": false,
+      },
+    });
+    await app.updateComplete;
+
+    const acpRow = Array.from(
+      app.querySelectorAll<HTMLButtonElement>(".nav-project-row--leaf"),
+    ).find((button) => button.textContent?.includes("Patch Worker"));
+    expect(acpRow).not.toBeNull();
+    acpRow?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    await nextFrame();
+    await app.updateComplete;
+
+    expect(request).toHaveBeenCalledWith(
+      "sessions.create",
+      expect.objectContaining({
+        agentId: "prime-salesforce-dev",
+        parentSessionKey: "agent:main:dashboard:main-chat",
+      }),
+    );
+    expect(app.sessionKey).toBe("agent:main:dashboard:acp-patch");
+  });
+
+  it("removes a project subtree from the tree without deleting sessions", async () => {
+    setViewport(1440, 900);
+    const app = mountApp("/chat");
+    app.missionControlRegistry = {
+      id: "ppv",
+      name: "Prime Property Ventures",
+      domains: [],
+      sessionLanes: [],
+      intakeRoutes: [],
+      treeNodes: [
+        {
+          id: "workspace:ppv",
+          parentId: null,
+          kind: "workspace",
+          label: "Prime Property Ventures Workspace",
+        },
+        {
+          id: "repo:ppv",
+          parentId: "workspace:ppv",
+          kind: "repo",
+          label: "PPV",
+        },
+        {
+          id: "module:operator-os",
+          parentId: "repo:ppv",
+          kind: "module",
+          label: "Operator OS",
+        },
+      ],
+    };
+    app.applySettings({
+      ...app.settings,
+      selectedProjectRepo: "main",
+      selectedProjectGroup: "module:operator-os",
+      navGroupsCollapsed: {
+        ...app.settings.navGroupsCollapsed,
+        project: false,
+        "tree:workspace:ppv": false,
+        "tree:repo:ppv": false,
+      },
+    });
+    await app.updateComplete;
+
+    vi.spyOn(window, "confirm").mockReturnValueOnce(true);
+
+    const repoGroup = Array.from(app.querySelectorAll<HTMLElement>(".nav-project-group")).find(
+      (el) => el.querySelector(".nav-project-group__text")?.textContent?.trim() === "PPV",
+    );
+    const removeButton = repoGroup?.querySelector<HTMLButtonElement>(".nav-project-group__remove");
+    expect(removeButton).not.toBeNull();
+    removeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+    await app.updateComplete;
+
+    expect(app.lastError).toBeNull();
+    expect(app.missionControlRegistry.treeNodes).toEqual([
+      expect.objectContaining({
+        id: "workspace:ppv",
+        kind: "workspace",
+      }),
+    ]);
+    expect(app.selectedProjectGroup).toBe("workspace:ppv");
   });
 
   it("hides section labels in collapsed mode", async () => {

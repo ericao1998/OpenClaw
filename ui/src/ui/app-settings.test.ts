@@ -1,14 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStorageMock } from "../test-helpers/storage.ts";
+import { refreshChat } from "./app-chat.ts";
+import { scheduleChatScroll } from "./app-scroll.ts";
 import {
   applyResolvedTheme,
   applySettings,
   applySettingsFromUrl,
   attachThemeListener,
+  refreshActiveTab,
   setTabFromRoute,
   syncThemeWithSettings,
 } from "./app-settings.ts";
+import { loadMissionControlRegistry } from "./mission-control-store.ts";
 import type { ThemeMode, ThemeName } from "./theme.ts";
+
+vi.mock("./app-chat.ts", () => ({
+  refreshChat: vi.fn(async () => {}),
+}));
+
+vi.mock("./app-scroll.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./app-scroll.ts")>();
+  return {
+    ...actual,
+    scheduleChatScroll: vi.fn(),
+  };
+});
+
+vi.mock("./mission-control-store.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mission-control-store.ts")>();
+  return {
+    ...actual,
+    loadMissionControlRegistry: vi.fn(async () => {}),
+  };
+});
 
 type Tab =
   | "agents"
@@ -229,6 +253,16 @@ describe("setTabFromRoute", () => {
     expect(host.theme).toBe("dash");
     expect(host.themeMode).toBe("light");
     expect(host.themeResolved).toBe("dash-light");
+  });
+
+  it("reloads the mission control registry while refreshing chat", async () => {
+    const host = createHost("chat");
+
+    await refreshActiveTab(host);
+
+    expect(refreshChat).toHaveBeenCalledTimes(1);
+    expect(loadMissionControlRegistry).toHaveBeenCalledTimes(1);
+    expect(scheduleChatScroll).toHaveBeenCalledTimes(1);
   });
 
   it("applies named system themes on OS preference changes", () => {

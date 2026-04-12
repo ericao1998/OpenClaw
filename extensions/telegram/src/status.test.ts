@@ -41,6 +41,28 @@ describe("collectTelegramStatusIssues", () => {
     expect(issues.some((issue) => issue.message.includes("unresolvedGroups=2"))).toBe(true);
   });
 
+  it("reports privacy-mode risk for mention-gated configured groups", () => {
+    const issues = collectTelegramStatusIssues([
+      {
+        accountId: "main",
+        enabled: true,
+        configured: true,
+        groupsConfigured: true,
+        allowUnmentionedGroups: false,
+        canReadAllGroupMessages: false,
+      } as ChannelAccountSnapshot,
+    ]);
+
+    expect(
+      issues.some(
+        (issue) =>
+          issue.channel === "telegram" &&
+          issue.accountId === "main" &&
+          issue.message.includes("Fresh group @mentions"),
+      ),
+    ).toBe(true);
+  });
+
   it("reports unreachable groups with match metadata", () => {
     const issues = collectTelegramStatusIssues([
       {

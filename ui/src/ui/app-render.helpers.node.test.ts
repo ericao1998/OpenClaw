@@ -21,6 +21,7 @@ vi.mock("./controllers/sessions.ts", () => ({
 }));
 
 import {
+  buildProjectTree,
   isCronSessionKey,
   parseSessionKey,
   resolveSessionDisplayName,
@@ -369,5 +370,66 @@ describe("switchChatSession", () => {
       includeGlobal: true,
       includeUnknown: true,
     });
+  });
+});
+
+describe("buildProjectTree", () => {
+  it("carries repo context and linked sessions through nested mission-control nodes", () => {
+    const state = {
+      missionControlRegistry: {
+        id: "ppv",
+        name: "PPV",
+        domains: [],
+        sessionLanes: [],
+        intakeRoutes: [],
+        treeNodes: [
+          { id: "workspace:ppv", parentId: null, kind: "workspace", label: "PPV Workspace" },
+          {
+            id: "repo:control",
+            parentId: "workspace:ppv",
+            kind: "repo",
+            label: "Control",
+            linkedDomainId: "control",
+          },
+          {
+            id: "module:composer",
+            parentId: "repo:control",
+            kind: "module",
+            label: "Composer",
+          },
+          {
+            id: "chat:composer",
+            parentId: "module:composer",
+            kind: "chat-module",
+            label: "Support Chat",
+            linkedSessionKey: "agent:openclaw:dashboard:composer-chat",
+          },
+        ],
+      },
+      sessionsResult: {
+        ts: 1,
+        path: "",
+        count: 1,
+        defaults: { modelProvider: null, model: null, contextTokens: null },
+        sessions: [{ key: "agent:openclaw:main", kind: "direct", updatedAt: 1 }],
+      },
+    } as unknown as AppViewState;
+
+    const tree = buildProjectTree(state);
+
+    expect(tree).toHaveLength(1);
+    expect(tree[0]?.pathLabels).toEqual(["PPV Workspace"]);
+    expect(tree[0]?.children[0]?.repo?.id).toBe("openclaw");
+    expect(tree[0]?.children[0]?.repoContext?.id).toBe("openclaw");
+    expect(tree[0]?.children[0]?.children[0]?.repoContext?.id).toBe("openclaw");
+    expect(tree[0]?.children[0]?.children[0]?.children[0]?.linkedSessionKey).toBe(
+      "agent:openclaw:dashboard:composer-chat",
+    );
+    expect(tree[0]?.children[0]?.children[0]?.children[0]?.pathLabels).toEqual([
+      "PPV Workspace",
+      "Control",
+      "Composer",
+      "Support Chat",
+    ]);
   });
 });
