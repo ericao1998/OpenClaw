@@ -171,9 +171,7 @@ export const PPV_WORKSPACE_REGISTRY: MissionControlWorkspaceRegistry = {
       owner: "Control lane",
       role: "OpenClaw web UI and workspace coordination layer",
       status: "Mission Control host",
-      docsPaths: [
-        "PPV-Dev-Root/docs/Architect-Docs/Mission-Control/17-EXECUTION-READY-MVP-SPEC.md",
-      ],
+      docsPaths: ["PPV-Dev-Root/Architect-Docs/Mission-Control/17-EXECUTION-READY-MVP-SPEC.md"],
       memorySources: ["PPV Control session"],
       routingKeywords: [
         "mission control",
