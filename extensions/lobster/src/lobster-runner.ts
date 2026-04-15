@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, promises as fsp } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -117,7 +117,7 @@ type ToolRuntimeDeps = {
     haltedAt?: { index?: number };
   }>;
   runWorkflowFile: (params: {
-    filePath: string;
+    filePath?: string;
     args?: Record<string, unknown>;
     ctx: EmbeddedToolContext;
     resume?: Record<string, unknown>;
@@ -538,7 +538,7 @@ function createFallbackEmbeddedToolRuntime(deps: ToolRuntimeDeps): EmbeddedToolR
         return okEnvelope("cancelled", [], null);
       }
 
-      if (payload.kind === "workflow-file" && payload.filePath) {
+      if (payload.kind === "workflow-file") {
         try {
           const output = await deps.runWorkflowFile({
             filePath: payload.filePath,
@@ -680,11 +680,34 @@ async function loadEmbeddedToolRuntimeFromPackage(): Promise<EmbeddedToolRuntime
       "dist/src/workflows/file.js",
     ),
     importInstalledLobsterModule<{
+      defaultStateDir?: (env: Record<string, string | undefined>) => string;
+      keyToPath?: (stateDir: string, key: string) => string;
       readStateJson: ToolRuntimeDeps["readStateJson"];
       writeStateJson: ToolRuntimeDeps["writeStateJson"];
-      deleteStateJson: ToolRuntimeDeps["deleteStateJson"];
+      deleteStateJson?: ToolRuntimeDeps["deleteStateJson"];
     }>(lobsterRoot, "dist/src/state/store.js"),
   ]);
+
+  const deleteStateJson: ToolRuntimeDeps["deleteStateJson"] =
+    typeof storeModule.deleteStateJson === "function"
+      ? storeModule.deleteStateJson
+      : async ({ env, key }) => {
+          const stateDir =
+            typeof storeModule.defaultStateDir === "function"
+              ? storeModule.defaultStateDir(env)
+              : path.join(process.env.HOME || "", ".lobster", "state");
+          const filePath =
+            typeof storeModule.keyToPath === "function"
+              ? storeModule.keyToPath(stateDir, key)
+              : path.join(stateDir, `${key}.json`);
+          try {
+            await fsp.unlink(filePath);
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+              throw error;
+            }
+          }
+        };
 
   return createFallbackEmbeddedToolRuntime({
     createDefaultRegistry: registryModule.createDefaultRegistry,
@@ -695,7 +718,7 @@ async function loadEmbeddedToolRuntimeFromPackage(): Promise<EmbeddedToolRuntime
     runWorkflowFile: workflowModule.runWorkflowFile,
     readStateJson: storeModule.readStateJson,
     writeStateJson: storeModule.writeStateJson,
-    deleteStateJson: storeModule.deleteStateJson,
+    deleteStateJson,
   });
 }
 

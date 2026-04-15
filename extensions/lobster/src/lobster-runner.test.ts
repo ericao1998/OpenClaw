@@ -205,6 +205,160 @@ describe("createEmbeddedLobsterRunner", () => {
     });
   });
 
+  it("resumes workflow-file approvals when the token only carries stateKey", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-lobster-runner-"));
+    const workflowPath = path.join(tempDir, "workflow.lobster");
+    const stateDir = path.join(tempDir, "state");
+    const previousStateDir = process.env.LOBSTER_STATE_DIR;
+
+    await fs.writeFile(
+      workflowPath,
+      JSON.stringify(
+        {
+          name: "resume-smoke",
+          steps: [
+            {
+              id: "gate",
+              command:
+                "node -e \"process.stdout.write(JSON.stringify({requiresApproval:{prompt:'Proceed?',items:[{id:1}]}}))\"",
+              approval: "required",
+            },
+            {
+              id: "done",
+              command:
+                "node -e \"process.stdout.write(JSON.stringify({phase:'smoke',status:'approved'}))\"",
+              condition: "$gate.approved",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    process.env.LOBSTER_STATE_DIR = stateDir;
+
+    try {
+      const runner = createEmbeddedLobsterRunner();
+
+      const first = await runner.run({
+        action: "run",
+        pipeline: "workflow.lobster",
+        cwd: tempDir,
+        timeoutMs: 2000,
+        maxStdoutBytes: 4096,
+      });
+
+      expect(first).toMatchObject({
+        ok: true,
+        status: "needs_approval",
+      });
+      if (!first.ok || first.status !== "needs_approval") {
+        throw new Error("expected approval envelope");
+      }
+      const resumeToken = first.requiresApproval?.resumeToken;
+      expect(resumeToken).toBeTruthy();
+
+      const resumed = await runner.run({
+        action: "resume",
+        token: resumeToken ?? "",
+        approve: true,
+        cwd: tempDir,
+        timeoutMs: 2000,
+        maxStdoutBytes: 4096,
+      });
+
+      expect(resumed).toEqual({
+        ok: true,
+        status: "ok",
+        output: [{ phase: "smoke", status: "approved" }],
+        requiresApproval: null,
+      });
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.LOBSTER_STATE_DIR;
+      } else {
+        process.env.LOBSTER_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels workflow-file approvals and clears saved state when approval is rejected", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-lobster-runner-"));
+    const workflowPath = path.join(tempDir, "workflow.lobster");
+    const stateDir = path.join(tempDir, "state");
+    const previousStateDir = process.env.LOBSTER_STATE_DIR;
+
+    await fs.writeFile(
+      workflowPath,
+      JSON.stringify(
+        {
+          name: "reject-smoke",
+          steps: [
+            {
+              id: "gate",
+              command:
+                "node -e \"process.stdout.write(JSON.stringify({requiresApproval:{prompt:'Proceed?',items:[{id:1}]}}))\"",
+              approval: "required",
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    process.env.LOBSTER_STATE_DIR = stateDir;
+
+    try {
+      const runner = createEmbeddedLobsterRunner();
+
+      const first = await runner.run({
+        action: "run",
+        pipeline: "workflow.lobster",
+        cwd: tempDir,
+        timeoutMs: 2000,
+        maxStdoutBytes: 4096,
+      });
+
+      expect(first).toMatchObject({
+        ok: true,
+        status: "needs_approval",
+      });
+      if (!first.ok || first.status !== "needs_approval") {
+        throw new Error("expected approval envelope");
+      }
+      const resumeToken = first.requiresApproval?.resumeToken;
+      expect(resumeToken).toBeTruthy();
+      expect(await fs.readdir(stateDir)).toHaveLength(1);
+
+      const rejected = await runner.run({
+        action: "resume",
+        token: resumeToken ?? "",
+        approve: false,
+        cwd: tempDir,
+        timeoutMs: 2000,
+        maxStdoutBytes: 4096,
+      });
+
+      expect(rejected).toEqual({
+        ok: true,
+        status: "cancelled",
+        output: [],
+        requiresApproval: null,
+      });
+      expect(await fs.readdir(stateDir)).toHaveLength(0);
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.LOBSTER_STATE_DIR;
+      } else {
+        process.env.LOBSTER_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("loads the embedded runtime once per runner", async () => {
     const runtime = {
       runToolRequest: vi.fn().mockResolvedValue({
