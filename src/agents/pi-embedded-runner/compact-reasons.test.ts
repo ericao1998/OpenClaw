@@ -37,4 +37,16 @@ describe("classifyCompactionReason", () => {
       ),
     ).toBe("guard_blocked");
   });
+
+  it("classifies OpenAI's generic 5xx wording as provider_error_5xx even without an HTTP code", () => {
+    expect(
+      classifyCompactionReason(
+        "The server had an error processing your request. Sorry about that! You can retry your request, or contact us through our help center if you keep seeing this error.",
+      ),
+    ).toBe("provider_error_5xx");
+    expect(classifyCompactionReason("internal server error")).toBe("provider_error_5xx");
+    expect(classifyCompactionReason("Service Unavailable")).toBe("provider_error_5xx");
+    // "504 Gateway Timeout" correctly classifies as "timeout" via the earlier
+    // timeout rule — that's acceptable because both are transient-retry signals.
+  });
 });

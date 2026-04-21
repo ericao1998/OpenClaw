@@ -43,7 +43,7 @@ import {
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
-import { incrementCompactionCount } from "./session-updates.js";
+import { incrementCompactionCount, recordCompactionFailure } from "./session-updates.js";
 
 const memoryDeps = {
   compactEmbeddedPiSession,
@@ -52,6 +52,7 @@ const memoryDeps = {
   registerAgentRunContext,
   refreshQueuedFollowupSession,
   incrementCompactionCount,
+  recordCompactionFailure,
   updateSessionStoreEntry,
   randomUUID: () => crypto.randomUUID(),
   now: () => Date.now(),
@@ -65,6 +66,7 @@ export function setAgentRunnerMemoryTestDeps(overrides?: Partial<typeof memoryDe
     registerAgentRunContext,
     refreshQueuedFollowupSession,
     incrementCompactionCount,
+    recordCompactionFailure,
     updateSessionStoreEntry,
     randomUUID: () => crypto.randomUUID(),
     now: () => Date.now(),
@@ -464,6 +466,16 @@ export async function runPreflightCompactionIfNeeded(params: {
     logVerbose(
       `preflightCompaction skipped: sessionKey=${params.sessionKey} reason=${result?.reason ?? "not_compacted"}`,
     );
+    // Record the failure so the backoff gate can short-circuit next turn
+    // instead of hammering a down upstream provider on every message.
+    if (!result?.ok) {
+      await memoryDeps.recordCompactionFailure({
+        sessionEntry: entry,
+        sessionStore: params.sessionStore,
+        sessionKey: params.sessionKey,
+        storePath: params.storePath,
+      });
+    }
     return entry ?? params.sessionEntry;
   }
 

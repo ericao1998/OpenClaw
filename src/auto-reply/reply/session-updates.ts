@@ -264,6 +264,9 @@ export async function incrementCompactionCount(params: {
     updates.cacheRead = undefined;
     updates.cacheWrite = undefined;
   }
+  // A successful compaction resets the failure-backoff state.
+  updates.lastCompactionFailAt = undefined;
+  updates.consecutiveCompactionFailures = undefined;
   sessionStore[sessionKey] = {
     ...entry,
     ...updates,
@@ -286,6 +289,47 @@ export async function incrementCompactionCount(params: {
     });
   }
   return nextCount;
+}
+
+/**
+ * Record a failed compaction attempt on the session entry so the preflight
+ * gate can honour an exponential-backoff cooldown instead of retrying on
+ * every subsequent turn. Mirrors {@link incrementCompactionCount} for the
+ * in-memory + on-disk write path but does not advance compactionCount.
+ */
+export async function recordCompactionFailure(params: {
+  sessionEntry?: SessionEntry;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+  storePath?: string;
+  now?: number;
+}): Promise<void> {
+  const { sessionEntry, sessionStore, sessionKey, storePath, now = Date.now() } = params;
+  if (!sessionStore || !sessionKey) {
+    return;
+  }
+  const entry = sessionStore[sessionKey] ?? sessionEntry;
+  if (!entry) {
+    return;
+  }
+  const nextFailures = (entry.consecutiveCompactionFailures ?? 0) + 1;
+  const updates: Partial<SessionEntry> = {
+    lastCompactionFailAt: now,
+    consecutiveCompactionFailures: nextFailures,
+    updatedAt: now,
+  };
+  sessionStore[sessionKey] = {
+    ...entry,
+    ...updates,
+  };
+  if (storePath) {
+    await updateSessionStore(storePath, (store) => {
+      store[sessionKey] = {
+        ...store[sessionKey],
+        ...updates,
+      };
+    });
+  }
 }
 
 function resolveCompactionSessionFile(params: {

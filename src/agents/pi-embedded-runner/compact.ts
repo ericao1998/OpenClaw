@@ -383,11 +383,19 @@ export async function compactEmbeddedPiSessionDirect(
   let thinkLevel: ThinkLevel = params.thinkLevel ?? "off";
   const attemptedThinking = new Set<ThinkLevel>();
   const fail = (reason: string): EmbeddedPiCompactResult => {
+    const classified = classifyCompactionReason(reason);
+    // When the reason text falls through the classifier, preserve the raw
+    // (truncated) message in the diag line so operators can triage without
+    // needing debug-level logging enabled.
+    const rawSuffix =
+      classified === "unknown" && reason
+        ? ` rawReason=${JSON.stringify(reason.slice(0, 500))}`
+        : "";
     log.warn(
       `[compaction-diag] end runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
         `diagId=${diagId} trigger=${trigger} provider=${provider}/${modelId} ` +
-        `attempt=${attempt} maxAttempts=${maxAttempts} outcome=failed reason=${classifyCompactionReason(reason)} ` +
-        `durationMs=${Date.now() - startedAt}`,
+        `attempt=${attempt} maxAttempts=${maxAttempts} outcome=failed reason=${classified} ` +
+        `durationMs=${Date.now() - startedAt}${rawSuffix}`,
     );
     return {
       ok: false,

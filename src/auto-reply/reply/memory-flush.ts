@@ -60,7 +60,12 @@ function resolveMemoryFlushGateState<
 export function shouldRunMemoryFlush(params: {
   entry?: Pick<
     SessionEntry,
-    "totalTokens" | "totalTokensFresh" | "compactionCount" | "memoryFlushCompactionCount"
+    | "totalTokens"
+    | "totalTokensFresh"
+    | "compactionCount"
+    | "memoryFlushCompactionCount"
+    | "lastCompactionFailAt"
+    | "consecutiveCompactionFailures"
   >;
   /**
    * Optional token count override for flush gating. When provided, this value is
@@ -71,6 +76,8 @@ export function shouldRunMemoryFlush(params: {
   contextWindowTokens: number;
   reserveTokensFloor: number;
   softThresholdTokens: number;
+  /** Override "now" for tests. Defaults to Date.now(). */
+  now?: number;
 }): boolean {
   const state = resolveMemoryFlushGateState(params);
   if (!state || state.totalTokens < state.threshold) {
@@ -81,11 +88,18 @@ export function shouldRunMemoryFlush(params: {
     return false;
   }
 
+  if (isWithinCompactionFailureCooldown(state.entry, params.now ?? Date.now())) {
+    return false;
+  }
+
   return true;
 }
 
 export function shouldRunPreflightCompaction(params: {
-  entry?: Pick<SessionEntry, "totalTokens" | "totalTokensFresh">;
+  entry?: Pick<
+    SessionEntry,
+    "totalTokens" | "totalTokensFresh" | "lastCompactionFailAt" | "consecutiveCompactionFailures"
+  >;
   /**
    * Optional projected token count override for pre-run compaction gating.
    * When provided, this value is treated as a fresh estimate and used instead
@@ -95,9 +109,47 @@ export function shouldRunPreflightCompaction(params: {
   contextWindowTokens: number;
   reserveTokensFloor: number;
   softThresholdTokens: number;
+  /** Override "now" for tests. Defaults to Date.now(). */
+  now?: number;
 }): boolean {
   const state = resolveMemoryFlushGateState(params);
-  return Boolean(state && state.totalTokens >= state.threshold);
+  if (!state || state.totalTokens < state.threshold) {
+    return false;
+  }
+  if (isWithinCompactionFailureCooldown(state.entry, params.now ?? Date.now())) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Returns true when a recent compaction failure is still within its
+ * exponential-backoff window. Without this, a transient upstream provider
+ * outage turns into a per-turn compaction hammer: every subsequent user
+ * message re-enters the gate, fires compaction, fails the same way, and
+ * repeats. The backoff gives the upstream time to recover and stops wasting
+ * tokens/credits on doomed retries.
+ *
+ * Window: 60s, 120s, 240s, 480s, capped at 900s (15 min) after the 5th
+ * consecutive failure. Reset by {@link incrementCompactionCount} on success.
+ */
+export function isWithinCompactionFailureCooldown(
+  entry: Pick<SessionEntry, "lastCompactionFailAt" | "consecutiveCompactionFailures">,
+  now: number,
+): boolean {
+  const last = entry.lastCompactionFailAt;
+  if (typeof last !== "number" || !Number.isFinite(last) || last <= 0) {
+    return false;
+  }
+  if (now < last) {
+    // Clock skew / test pathologies — treat as not in cooldown.
+    return false;
+  }
+  const failures = Math.max(1, entry.consecutiveCompactionFailures ?? 1);
+  const baseMs = 60_000;
+  const capMs = 900_000;
+  const cooldownMs = Math.min(capMs, baseMs * 2 ** (failures - 1));
+  return now - last < cooldownMs;
 }
 
 /**

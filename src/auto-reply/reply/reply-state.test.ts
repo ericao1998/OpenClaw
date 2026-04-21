@@ -327,6 +327,78 @@ describe("shouldRunPreflightCompaction", () => {
       }),
     ).toBe(true);
   });
+
+  it("skips when a recent compaction failure is still inside the cooldown window", () => {
+    const now = 1_700_000_000_000;
+    // 10s ago < 60s base cooldown
+    expect(
+      shouldRunPreflightCompaction({
+        entry: {
+          totalTokens: 96_000,
+          lastCompactionFailAt: now - 10_000,
+          consecutiveCompactionFailures: 1,
+        },
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 5_000,
+        softThresholdTokens: 2_000,
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("resumes when the cooldown window has elapsed", () => {
+    const now = 1_700_000_000_000;
+    // 61s ago > 60s base cooldown for the first failure
+    expect(
+      shouldRunPreflightCompaction({
+        entry: {
+          totalTokens: 96_000,
+          lastCompactionFailAt: now - 61_000,
+          consecutiveCompactionFailures: 1,
+        },
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 5_000,
+        softThresholdTokens: 2_000,
+        now,
+      }),
+    ).toBe(true);
+  });
+
+  it("applies exponential backoff to consecutive failures", () => {
+    const now = 1_700_000_000_000;
+    // Failure #3 → 60s * 2^(3-1) = 240s cooldown; 200s elapsed is still inside
+    expect(
+      shouldRunPreflightCompaction({
+        entry: {
+          totalTokens: 96_000,
+          lastCompactionFailAt: now - 200_000,
+          consecutiveCompactionFailures: 3,
+        },
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 5_000,
+        softThresholdTokens: 2_000,
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("caps the cooldown at 15 minutes regardless of failure count", () => {
+    const now = 1_700_000_000_000;
+    // Failure #20 would be huge without the cap; 16 min elapsed must resume.
+    expect(
+      shouldRunPreflightCompaction({
+        entry: {
+          totalTokens: 96_000,
+          lastCompactionFailAt: now - 960_000, // 16 min
+          consecutiveCompactionFailures: 20,
+        },
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 5_000,
+        softThresholdTokens: 2_000,
+        now,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("hasAlreadyFlushedForCurrentCompaction", () => {

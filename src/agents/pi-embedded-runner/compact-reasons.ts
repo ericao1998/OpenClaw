@@ -53,7 +53,15 @@ export function classifyCompactionReason(reason?: string): string {
     text.includes("500") ||
     text.includes("502") ||
     text.includes("503") ||
-    text.includes("504")
+    text.includes("504") ||
+    // OpenAI's user-facing 5xx wording carries no HTTP code — match it explicitly
+    // so compaction failures during upstream outages classify as provider_error_5xx
+    // instead of falling through to "unknown".
+    text.includes("the server had an error") ||
+    text.includes("internal server error") ||
+    text.includes("service unavailable") ||
+    text.includes("bad gateway") ||
+    text.includes("gateway timeout")
   ) {
     return "provider_error_5xx";
   }

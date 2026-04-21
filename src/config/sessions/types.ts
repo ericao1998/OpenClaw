@@ -216,6 +216,18 @@ export type SessionEntry = {
   fallbackNoticeReason?: string;
   contextTokens?: number;
   compactionCount?: number;
+  /**
+   * Unix ms timestamp of the most recent compaction failure. Used to impose a
+   * cooldown before the preflight gate will retry compaction — otherwise a
+   * transient upstream outage turns into a per-turn hammer loop.
+   * Cleared on successful compaction.
+   */
+  lastCompactionFailAt?: number;
+  /**
+   * Count of consecutive compaction failures since the last successful
+   * compaction. Drives the exponential-backoff window. Cleared on success.
+   */
+  consecutiveCompactionFailures?: number;
   compactionCheckpoints?: SessionCompactionCheckpoint[];
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
